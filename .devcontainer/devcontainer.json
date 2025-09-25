@@ -1,0 +1,67 @@
+// .devcontainer/devcontainer.json
+{
+    "name": "Volumetric MRI Classification Dev Container",
+    "image": "cat_2d_v2:latest", // Your existing image
+
+    "runArgs": [
+        "--name", "volMRIclass-devcontainer",
+        "--gpus", "all"
+    ],
+
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+    "workspaceFolder": "/workspace",
+
+    // Set the remote user. Your prompt shows 'developer', so this is likely correct.
+    "remoteUser": "developer",
+
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "ms-toolsai.jupyter",
+                "ms-python.black-formatter"
+            ],
+            "settings": {
+                // *** CRITICAL CHANGE: Point to the base Conda Python ***
+                "python.defaultInterpreterPath": "/opt/conda/bin/python",
+
+                // Explicitly tell Jupyter which server type to use
+                "jupyter.jupyterServerType": "local",
+
+                // Reduce the scope of Python environment discovery
+                "python.venvFolders": [],
+                "python.condaPath": "/opt/conda/bin/conda", // Explicitly point to conda executable
+                "python.environments.disableCustomPythonPathInWorkspace": true,
+                "python.terminal.activateEnvironment": true, // Activates the selected env in new terminals
+
+                // Speed up Jupyter server startup timeout if needed
+                "jupyter.launchTimeout": 60000, // 60 seconds
+
+                // Exclude other common Python paths if you only want the conda base env recognized
+                "jupyter.kernels.exclude": [
+                    "**/usr/bin/python",
+                    "**/usr/local/bin/python"
+                ],
+                // Or you could use `include` if you want to be very restrictive:
+                // "jupyter.kernels.include": ["/opt/conda/bin/python"]
+            }
+        }
+    },
+
+    // Environment variables that are already set in the image should generally be fine,
+    // but explicitly setting them here can ensure VS Code's remote environment picks them up.
+    "containerEnv": {
+        "NVIDIA_VISIBLE_DEVICES": "all",
+        "NVIDIA_DRIVER_CAPABILITIES": "compute,utility"
+        // No need for CONDA_DEFAULT_ENV if 'base' is the target.
+    },
+
+    // Remove `remoteEnv` PATH manipulation as `/opt/conda/bin` should already be in PATH from the image
+    // and there's no specific sub-environment to activate.
+
+    // *** IMPORTANT: Remove or comment out postStartCommand for Jupyter ***
+    // This is often the culprit for "Kernel Detection" issues if VS Code is trying to start its own
+    // server while one is already explicitly launched. Let VS Code manage the Jupyter server.
+    // "postStartCommand": "jupyter notebook --ip=0.0.0.0 --no-browser --allow-root --notebook-dir=/workspace"
+}
