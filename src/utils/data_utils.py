@@ -14,10 +14,8 @@ import logging
 from utils.logging_utils import log_and_print, log_checkpoint, log_title
 from utils.helper_utils import (
     flatten_array, 
-    normalize_and_scale_df,
     scale_data_transform, 
     combine_dfs, 
-    read_hdf5_to_df, 
     resplit_data,
     )
 
@@ -82,21 +80,19 @@ def cross_validation_split(
 def split_annotations(
     # The annotations dataframe that you want to split into a train and validation part
     annotations: pd.DataFrame,
-    # The proportion of the data that should be in the training set (the rest is in the test set)
-    train_proportion: float = 0.7,
+    # The proportion of the data that should be in the first of the two outputted data frames
+    proportion: float = 0.7,
     # The diagnoses you want to include in the split, defaults to all
     diagnoses: List[str] = None,
     # The datasets you want to include in the split, defaults to all
     datasets: List[str] = None,
     # The random seed for reproducibility
     seed: int = 123,
-    # Is fine-tuning being carried out?
-    fine_tuning: bool = False,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
     # Initialize empty dataframes
-    train = pd.DataFrame()
-    valid = pd.DataFrame()
+    first = pd.DataFrame()
+    second = pd.DataFrame()
 
     # If no diagnoses are specified, use all diagnoses in the annotations
     if diagnoses is None:
@@ -121,28 +117,15 @@ def split_annotations(
                 frac=1, random_state=seed
             )
             # split the data train_proportion of the way through (usually 80%)
-            split = round(len(dataset_annotations) * train_proportion)
+            split = round(len(dataset_annotations) * proportion)
 
             # add the split data to the train and test dataframes
-            train = pd.concat(
-                [train, dataset_annotations[:split]], ignore_index=True
+            first = pd.concat(
+                [first, dataset_annotations[:split]], ignore_index=True
             )
-            valid = pd.concat([valid, dataset_annotations[split:]], ignore_index=True)
+            second = pd.concat([second, dataset_annotations[split:]], ignore_index=True)
 
-    # If we are fine tuning our model we want to move all the patients with the new diagnostic label (here CTT) to the validation set. 
-    if fine_tuning: 
-        move_train_valid = []
-
-        for idx, row in train.iterrows():
-            if row["Diagnosis"] == "CTT":
-                move_train_valid.append(idx)
-        
-        ctt_subset = train.iloc[move_train_valid, :]
-        train.drop(move_train_valid, inplace=True)
-        valid = pd.concat([valid, ctt_subset], axis=0)
-        print(len(move_train_valid))
-    # return the split annotations. They have no overlap.
-    return train, valid
+    return first, second
 
 
 
@@ -179,7 +162,7 @@ def split_subjects(
 
 # The following two classes convert the lists of subjects into PyTorch dataloaders.
 
-class CustomDataset_2D_XCov():  
+class CustomDataset():  
     # Create Datasets that can then be converted into DataLoader objects
     def __init__(self, subjects, covars):
         self.subjects = subjects
@@ -211,7 +194,7 @@ class CustomDataset_2D_XCov():
 
 # This function loads all the mri data from .h5 files and outputs them as a list of subjects alongside all covariables including the true label. 
 # The data for each patient is saved and importantly the length of each flattened input feature to split this again when passing the tensor to the model.
-def load_mri_data_NewVAE(
+def load_mri_data(
     # The path to the directory where the MRI data is stored (.csv file formats)
     atlas_data_paths: dict,
     # Per dataset scalers that should be used for scaling the validation and testing data.
@@ -223,12 +206,7 @@ def load_mri_data_NewVAE(
     # The diagnoses that you want to include in the data loading, defaults to all
     diagnoses = None,
     covars = [],
-    hdf5: bool = True,
     train_or_test: str = "train",
-    # Scaling method. Either "z" or "iqr"
-    scaling_method: str = "z",
-    # Should scaling be perfromed per dataset (True), or across all (False)
-    scale_per_dataset: bool = False,
     # Should only a specific volume measurement be used? Choose one from Vgm, Vwm, Vcsf.
     vol_to_use: str = None,
     # Should fine tuning be considered? This changes the path of the extracted data.
@@ -237,10 +215,7 @@ def load_mri_data_NewVAE(
     all_labels: bool = False,
     # Has the data already been batch corrected? In this case no scaling!
     batch_corrected: bool = False, 
-) -> Tuple:
-    
-    data_paths = sorted(list(atlas_data_paths.values()))
-    #logging.info(f"Sorted data paths for {train_or_test}: {data_paths}")
+    ) -> Tuple:
 
     if csv_paths is not None:
         for csv_path in csv_paths: 
@@ -276,7 +251,6 @@ def load_mri_data_NewVAE(
 
     # Filter unwanted diagnoses
     data_overview = data_overview[data_overview["Diagnosis"].isin(diagnoses)]
-    # data_overview = data_overview.drop(columns=['Unnamed: 0'])
     data_overview = data_overview[list(set(["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]+variables))]
 
     if fine_tuning:  # The fine-tuning data has to be scaled with the rest to ensure similar performance!
@@ -302,18 +276,14 @@ def load_mri_data_NewVAE(
     for atlas, data_path in atlas_data_paths.items():
 
         atlas_lengths[atlas] = None
-
-        if hdf5 == True: 
-            data = read_hdf5_to_df(filepath=data_path)
-        else:
-            data = pd.read_csv(data_path, header=[0, 1], index_col=0)
+        data = pd.read_csv(data_path, header=[0,1], index_col=0)
 
         # The oversampled trianing data is already normalized and scaled.
         if train_or_test != "train" and scalers_per_atlas is not None and not batch_corrected:
             logging.info(f"Scaling {atlas} testing data!")
             scalers = scalers_per_atlas[atlas] 
-            data, _ = scale_data_transform(data, 
-                                        training_scalers=scalers)
+            mtypes = data.index.str.split('^').str.get(-1).unique()
+            data, _ = scale_data_transform(data, mtypes, training_scalers=scalers)
         
             
         data.sort_index(inplace=True)  # Crucial step! Oversampling of the input data causes an alphabetical sorting of the features! 
@@ -362,156 +332,7 @@ def load_mri_data_NewVAE(
     return list(subjects.values()), data_overview, atlas_lengths
 
 
-def load_mri_data_2D(
-    # The path to the directory where the MRI data is stored (.csv file formats)
-    data_path: str,
-    # Name of the atlas that should be used for training.
-    atlas_name: str,
-    # The path to the CSV file that contains the filenames of the MRI data and the diagnoses and covariates
-    csv_paths: list = None,
-    # The annotations DataFrame that contains the filenames of the MRI data and the diagnoses and covariates
-    annotations: pd.DataFrame = None,
-    # The diagnoses that you want to include in the data loading, defaults to all
-    diagnoses: List[str] = None,
-    covars: List[str] = [],
-    # Are the files of raw extracted xml data in the .h5 (True) or .csv (False) format?
-    hdf5: bool = True,
-    # Intended usage for the currently loaded data.
-    train_or_test: str = "train",
-    # Should the normalized and scaled file be saved?
-    save: bool = False,
-    # Scaling method. Either "z" or "iqr"
-    scaling_method: str = "z",
-    # Should scaling be perfromed per dataset (True), or across all (False)
-    scale_per_dataset: bool = False,
-    # Should only a specific volume measurement be used? Choose one from Vgm, Vwm, Vcsf. None for all measurments. 
-    vol_to_use: str = None,
-    # Should fine tuning be considered? This changes the path of the extracted data.
-    fine_tuning: bool = False,
-    # Should all labels be allowed to be loaded?
-    all_labels: bool = False,
-) -> Tuple:
-    
-    # If the CSV path is provided, check if the file exists, make sure that the annotations are not provided
-    if csv_paths is not None:
-        for csv_path in csv_paths: 
-            assert os.path.isfile(csv_path), f"CSV file '{csv_path}' not found"
-            assert annotations is None, "Both CSV and annotations provided"
-
-        # Initialize the data overview DataFrame
-        data_overview = combine_dfs(csv_paths)
-
-    # If the annotations are provided, make sure that they are a pandas DataFrame, and that the CSV path is not provided
-    if annotations is not None:
-        assert isinstance(
-            annotations, pd.DataFrame
-        ), "Annotations must be a pandas DataFrame"
-        assert csv_paths is None, "Both CSV and annotations provided"
-
-        # Initialize the data overview DataFrame
-        data_overview = annotations
-    # For each subject, collect MRI data and variable data in the Subject object
-    subjects = []
-
-    if hdf5 == True: 
-        atlas_data_path = f"{data_path}/Aggregated_{atlas_name}.h5"
-        data = read_hdf5_to_df(filepath=atlas_data_path)  # Reads the data that was previously split into training/validation and testing during CV function. 
-    else:
-        atlas_data_path = f"{data_path}/Aggregated_{atlas_name}.csv"
-        data = pd.read_csv(atlas_data_path, header=[0, 1], index_col=0)
-        
-    # data.set_index("Filename", inplace=True)
-    data = normalize_and_scale_df(data, 
-                                  df_meta=data_overview, 
-                                  scaling_method=scaling_method, 
-                                  scale_per_dataset=scale_per_dataset,
-                                  vol_to_use=vol_to_use)
-    
-    
-    # data_overview = data_overview[data_overview["Diagnosis"] != "CTT"]
-    # path_new_train = f"/workspace/data/relevant_metadata/training_metadata_xcov.csv"
-    # data_overview.to_csv(path_new_train)
-    
-    if fine_tuning:  # The fine-tuning data has to be scaled with the rest to ensure similar performance!
-        fine_tuning_df = data_overview[data_overview["Diagnosis"] == "CTT"]
-        path_new_tune = f"/workspace/data/relevant_metadata/fine_tuning_metadata_xcov.csv"
-        fine_tuning_df.to_csv(path_new_tune)
-
-    # If no diagnoses are provided, use all diagnoses in the data overview
-    if diagnoses is None:
-        diagnoses = data_overview["Diagnosis"].unique().tolist()
-
-    # If the covariates are not a list, make them a list
-    if not isinstance(covars, list):
-        covars = [covars]
-
-    # If the diagnoses are not a list, make them a list
-    if not isinstance(diagnoses, list):
-        diagnoses = [diagnoses]
-    
-    # Set all the variables that will be one-hot encoded
-    variables = ["Diagnosis"] + covars
-
-    # Filter unwanted diagnoses
-    data_overview = data_overview[data_overview["Diagnosis"].isin(diagnoses)]
-    # data_overview = data_overview.drop(columns=['Unnamed: 0'])
-    data_overview = data_overview[list(set(["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]+variables))]
-    # produce one hot coded labels for each variable. Perform after a possible split into training and fine tuning data has been done. 
-
-    one_hot_labels = {}
-    for var in variables:
-        # check that the variables is in the data overview
-        if var not in data_overview.columns:
-            raise ValueError(f"Column '{var}' not found in CSV file or annotations")
-
-        # one hot encode the variable
-        one_hot_labels[var] = pd.get_dummies(data_overview[var], dtype=float)
-
-    if save == True:
-        data.to_csv(f"/workspace/data/proc_extracted_xml_data/Proc_{atlas_name}_{train_or_test}.csv")
-        
-    all_file_names = data.columns.get_level_values(0).to_list() # This seems to be fine from the number of filenames, but they seem to be different.
-    
-    for index, row in data_overview.iterrows():
-        subject = {} 
-        
-        if not fine_tuning and not all_labels:
-            if row["Diagnosis"] == "CTT":
-                continue
-
-        if not row["Filename"] in all_file_names:
-            data_overview.drop([index], inplace=True)
-            continue
-
-        # Format correct filename
-        if row["Filename"].endswith(".nii") or row["Filename"].endswith(".nii.gz"):
-            pre_file_name = row["Filename"]
-            match_no_ext = re.search(r"([^/\\]+)\.[^./\\]*$", pre_file_name)  # Extract file stem
-            if match_no_ext:
-                file_name = match_no_ext.group(1)
-        else:
-            file_name = row["Filename"]
-
-        patient_data = data[file_name]
-        flat_patient_data = flatten_array(patient_data).tolist()
-
-        subject["name"] = file_name
-        subject["measurements"] = flat_patient_data
-        subject["labels"] = {}
-
-        for var in variables:
-            
-            subject["labels"][var] = one_hot_labels[var].loc[index].to_numpy().tolist()
-
-        # Store Subject in our list
-        subjects.append(subject)
-    
-    # Return the list of subjects and the filtered annotations
-    return subjects, data_overview
-
-
-
-def process_subjects_XCov(
+def process_subjects(
     # The list of tio.Subject objects that you want to process
     subjects: List,
     # The batch size for the DataLoader (the larger, the more memory is needed)
@@ -523,7 +344,7 @@ def process_subjects_XCov(
 ) -> DataLoader:
 
     # Apply transformations
-    dataset = CustomDataset_2D_XCov(subjects=subjects, covars=covars)
+    dataset = CustomDataset(subjects=subjects, covars=covars)
     
     # Create data loader
     data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle_data)

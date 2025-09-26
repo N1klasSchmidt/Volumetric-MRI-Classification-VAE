@@ -1,0 +1,61 @@
+# ===================================================================
+# 1. EXPERIMENT CONTROL
+# Define the overall run and saving behavior.
+# ===================================================================
+experiment:
+  # A unique name for this run (used for output directory creation)
+  name: "MyProject_AgePrediction_Run01"
+  # Set to True to train a new model; False to load a pre-trained one.
+  train_model: True
+  # If train_model is False, specify the experiment name/path to load weights from.
+  # If 'None', it will look for the latest run of the same model_type.
+  base_experiment_to_load: None
+  # Base directory where all results (logs, models, metrics) will be saved
+  output_root_dir: "./experiments"
+
+
+# ===================================================================
+# 2. DATA SPECIFICATION
+# Define the location and format of the input data.
+# ===================================================================
+
+data:
+  # Path to the main data directory
+  data_dir: "./data/"
+  # Format of the raw input data. Options: h5, csv
+  # Every data file must have ROI^measurementtype as row indices, and samples as column names.
+  data_format: "csv"
+  # Path to the supplementary metadata file. This should contain ALL samples.
+  metadata_path: "./data/full_metadata.csv"
+  # List of atlases. Ensure that the data of each atlas segmentation is saved to a separate file.
+  # The system will automatically determine the best abbreviation.
+  input_atlases:
+    - neuromorphometrics
+    - suit
+    - lpba40
+    - cobra
+
+
+# ===================================================================
+# 3. MODEL SPECIFICATION
+# Define the model architecture and its hyperparameters.
+# ===================================================================
+
+model:
+  # Which model implementation to use
+  type: "Xcov" # Options: Xcov, Base
+  # Path pointing to model-specific parameters. Can be adjusted in src/utils/param_utils.py
+  params: "run_parameters.csv"
+
+  # --- Specific to Xcov model type ---
+  # If the model type is 'Xcov', this specifies the covariate to use (must exist in metadata!)
+  covariate_name: "Dataset"
+
+
+# ===================================================================
+# $. EVALUATION
+# Define which steps of the testing and downstream analysis are performed.
+# ===================================================================
+
+analysis: 
+  # Which 

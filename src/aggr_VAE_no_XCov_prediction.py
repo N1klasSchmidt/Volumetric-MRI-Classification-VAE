@@ -14,8 +14,8 @@ import logging
 
 from models.aggr_VAE import NewVAE
 
-from utils.data_utils import (process_subjects_XCov, 
-                                      load_mri_data_NewVAE,
+from utils.data_utils import (process_subjects, 
+                                      load_mri_data,
                                       process_latent_space_2D
                                       )
 from utils.helper_utils import get_all_data
@@ -85,7 +85,7 @@ class SinglePredictor_no_XCov():
 
         assert self.model_config.PURPOSE != "train"  # Ensuring that we scale the testing data! 
 
-        subjects, _ , atlas_lengths = load_mri_data_NewVAE(
+        subjects, _ , atlas_lengths = load_mri_data(
                 csv_paths=csv_paths,
                 atlas_data_paths=data_paths,
                 scalers_per_atlas=scalers,
@@ -101,7 +101,7 @@ class SinglePredictor_no_XCov():
                 batch_corrected=self.model_config.BATCH_CORRECTION
             )
         self.atlas_lengths = atlas_lengths
-        self.dataloader = process_subjects_XCov(subjects=subjects, batch_size=64, shuffle_data=False, covars=[self.model_config.COVARS[0]])
+        self.dataloader = process_subjects(subjects=subjects, batch_size=64, shuffle_data=False, covars=[self.model_config.COVARS[0]])
         
         # Save the extended metadata of the NSS and WhiteCAT datasets to correct the true labels based on codiagnoses.
         nss_path = "/workspace/data/metadata/meta_data_NSS_all_variables.csv"
@@ -786,142 +786,5 @@ class SinglePredictor_no_XCov():
         # self.extract_latent_space(dataloader=self.dataloader)
 
         return prediction_eval #precision, recall, f1, class_logits, test_labels
-
-
-if __name__ == "__main__":
-
-    # The following code shows the step-by-step usage of the above SinglePredictor for the case of using saved models 
-    # and applied to internal testing data without CTT patients. For an example of how this code is used using already loaded models,
-    # see RUN_ClassVAE_2D.py
-
-    logging_config = TestingConfig(
-        UMAP_NEIGHBORS=100, 
-        SEED=123,
-        TIMESTAMP=None,
-        DATA_DIR="./analysis/testing"
-    )
-
-    diagnosis_colors_plotting = {
-        'CTT': 'navy',  # Strong Violet
-        'HC': 'green',   # Bright Sky Blue
-        'MDD': 'fuchsia',  # Rich Orange-Red
-        'SCHZ': 'red'  # Dark Lime Green
-    }
-
-    xcov_path_ext = "_xcov" # Use only if xcov should be used
-
-    testing_metadata = [f"/workspace/data/relevant_metadata/testing_metadata{xcov_path_ext}.csv"]
-    training_metadata = [f"/workspace/data/relevant_metadata/training_metadata{xcov_path_ext}.csv"]
-    run_name = f"ClassVAE_2D_training{xcov_path_ext}"
-
-    raw_train_data_directory = "/workspace/data/raw_extracted_xml_data/train_xml_data"
-    processed_train_data_directory = "/workspace/data/proc_extracted_xml_data"
-
-    raw_test_data_directory = "/workspace/data/raw_extracted_xml_data/test_xml_data"
-    raw_hold_out_data_directory = "/workspace/data/raw_extracted_xml_data/hold_out_xml_data"
-
-    output_directory = "/workspace/analysis"
-    testing_directory = "/workspace/analysis/testing"
-
-    model_config = Config_XCov_CV(
-                # General Parameters
-                RUN_NAME=run_name,
-                # Input / Output Paths
-                TEST_CSV=testing_metadata,
-                TRAIN_CSV=training_metadata,
-                MRI_DATA_PATH=raw_train_data_directory, 
-                ATLAS_NAME="single_predictor",
-                PROC_DATA_PATH=processed_train_data_directory,
-                OUTPUT_DIR=output_directory,
-                # Loading Model
-                LOAD_MODEL=False,
-                PRETRAIN_MODEL_PATH=None,
-                PRETRAIN_METRICS_PATH=None,
-                CONTINUE_FROM_EPOCH=0,
-                # Loss Parameters
-                RECON_LOSS_WEIGHT=1,
-                KLDIV_LOSS_WEIGHT=1,
-                CLASS_LOSS_WEIGHT=1,
-                XCOV_LOSS_WEIGHT=1,
-                XCOV_CAT_LOSS_WEIGHT=1,
-                # Learning and Regularization
-                TOTAL_EPOCHS=1,
-                LEARNING_RATE=1,
-                WEIGHT_DECAY=1,
-                EARLY_STOPPING=True,
-                STOP_LEARNING_RATE=4e-8,
-                SCHEDULE_ON_VALIDATION=True,
-                SCHEDULER_PATIENCE=6,
-                SCHEDULER_FACTOR=0.5,
-                # Visualization
-                CHECKPOINT_INTERVAL=5,
-                DONT_PLOT_N_EPOCHS=0,
-                UMAP_NEIGHBORS=30,
-                UMAP_DOT_SIZE=20,
-                METRICS_ROLLING_WINDOW=10,
-                PLOTTING_COLORS=diagnosis_colors_plotting,
-                # Data Parameters
-                BATCH_SIZE=64,
-                DIAGNOSES=["HC", "MDD", "SCHZ"],
-                COVARS=["Dataset"],
-                # Misc.
-                LATENT_DIM=20,
-                SHUFFLE_DATA=False,
-                FINE_TUNING=False,
-                CE_CLASS_WEIGHTS=None,#[1.0, 2.0, 2.0],
-                ALL_LABELS=False,
-                PURPOSE="test",
-                VOLUMES=None,
-                DROPOUT_PROB=0.4,
-                HIDDEN_DIM=100,
-            )
-    model_config.update_working_dir()
-
-    models = {"neuromorphometrics": "analysis/2025-05-30_14-27_ClassVAE_2D_XCov_Dataset_training_woft/models/2025-05-30_14-27_ClassVAE_2D_XCov_Dataset_training_woft_ebest_model.pth", 
-              "cobra": "analysis/2025-05-22_15-40_ClassVAE_2D_XCov_Dataset_training/models/2025-05-22_15-40_ClassVAE_2D_XCov_Dataset_training_ebest_model.pth", #
-              "lpba40": "analysis/2025-05-22_15-43_ClassVAE_2D_XCov_Dataset_training/models/2025-05-22_15-43_ClassVAE_2D_XCov_Dataset_training_ebest_model.pth", # 
-              "suit": "analysis/2025-05-22_15-45_ClassVAE_2D_XCov_Dataset_training/models/2025-05-22_15-45_ClassVAE_2D_XCov_Dataset_training_ebest_model.pth", 
-              }
-
-    label_mapping = {0: "HC",
-                        1: "MDD",
-                        2: "SCHZ",
-                        }
-
-    # For a "normal" predictor that relies only on a single model
-    setup_prediction_logging(config=logging_config)
-
-    for atlas_name, model_path in models.items():
-        print(f"--------------------------------------------------------------------------------")
-        print(f"Currently computing metrics for single model: {atlas_name}")
-        print(f"Results saved to path: {logging_config.RUN_DIR}")
-
-        npredictor = SinglePredictor_no_XCov(device=get_free_gpu(),
-                                    model_path=model_path,
-                                    atlas_name=atlas_name,
-                                    latent_dim=20,
-                                    logging_config=logging_config,
-                                    model_config=model_config,
-                                    model_type="xcov",#"xcov",
-                                    label_mapping=label_mapping
-                                    )
-        if atlas_name == "all":
-            all_data_paths = get_all_data(directory="./data/raw_extracted_xml_data/test_xml_data", ext="csv")
-            
-            npredictor.init_test_data(csv_paths=["./data/relevant_metadata/testing_metadata_xcov.csv"],
-                                      data_paths=all_data_paths,
-                                      atlas=atlas_name)
-        else:
-            npredictor.init_test_data(csv_paths=["./data/relevant_metadata/testing_metadata_xcov.csv"],
-                                      data_paths=[f"./data/raw_extracted_xml_data/test_xml_data"],
-                                      atlas=atlas_name)
-        
-        npredictor.init_model()
-
-        model_pred_metrics = npredictor.compute_testing_performance()
-        npredictor.make_stacked_barplot()
-
-        log_prediction_metrics(metrics=model_pred_metrics, epoch="best")
-        
-    end_prediction_logging(config=logging_config)
-
+    
+    

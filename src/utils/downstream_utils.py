@@ -15,10 +15,10 @@ import logging
 from pathlib import Path
 import itertools
 
-from models.NewVAE import NewVAE
-from models.NewVAE_no_XCov import NewVAE_no_XCov
+from models.aggr_VAE import NewVAE
+from models.aggr_VAE_no_XCov import NewVAE_no_XCov
 from utils.logging_utils import log_title
-from utils.helper_functions_2D import plot_brain_with_saliency
+from utils.helper_utils import plot_brain_with_saliency
 
 from sklearn.linear_model import LogisticRegression, ridge_regression, Lasso
 from sklearn.ensemble import RandomForestClassifier

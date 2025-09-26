@@ -18,7 +18,7 @@ import copy
 import hashlib
 
 # Import helper functions for data handling, logging and plotting
-from utils.helper_utils import loss_proportions, update_performance_metrics, get_model_hash
+from utils.helper_utils import loss_proportions, update_performance_metrics
 from utils.config_utils import Config_XCov_CV
 from utils.data_utils import (
     combine_latent_spaces,
@@ -158,24 +158,10 @@ class NewVAE(nn.Module):
                                    )
             
             xcov_classifier = nn.Sequential(nn.Linear(latent_dim, num_xcov_groups)) # The latent_dim here shouldn't be concerning! It is NOT the latent space that is being classified on, but the output of the encoder! 
-            # xcov_classifier = nn.Sequential(
-            #     nn.Linear(latent_dim, int(hidden_dim//2)),
-            #     nn.ELU(1e-2),
-            #     nn.Dropout1d(dropout_prob),
-            #     nn.Linear(int(hidden_dim//2), int(hidden_dim//4)),
-            #     nn.ELU(1e-2),
-            #     nn.Dropout1d(dropout_prob),
-            #     nn.Linear(int(hidden_dim//4), num_xcov_groups)
-            #     )
 
             fc_mu = nn.Sequential(nn.Linear(latent_dim, latent_dim),)
             
             fc_var = nn.Sequential(nn.Linear(latent_dim, latent_dim),)
-
-            # fc_var = nn.Sequential(
-            #     nn.Linear(latent_dim, latent_dim),
-            #     nn.Hardtanh(min_val=-6.0, max_val=2.0)
-            # )
             
             # For each input atlas we initialize one VAE model with an attached XCov classifier.
             sub_vae = nn.ModuleDict({"encoder": encoder, 
@@ -188,38 +174,11 @@ class NewVAE(nn.Module):
             sub_vae = sub_vae.float()
 
             self.whole_model.append(sub_vae)
-
-        # # 1. Encoder
-        # self.encoder = nn.Sequential(
-        #     # Layer 1
-        #     nn.Linear(input_dim, hidden_dim),
-        #     nn.LeakyReLU(1e-2),
-        #     nn.Dropout1d(p=dropout_prob),
-        #     # Layer 2
-        #     nn.Linear(hidden_dim, latent_dim),
-        # )
         
-        # # Classify the group that we want to remove from the latent space
-        # self.xcov_classifier = nn.Sequential(
-        #     #nn.Linear(latent_dim, hidden_dim),
-        #     #nn.LeakyReLU(1e-2),
-        #     nn.Linear(latent_dim, num_xcov_groups)  # The latent dim here shouldn't be concerning! It is NOT the latent space that is being classified on, but the output of the encoder! 
-        # )
-
-        #self.encoder_feature_dim = int(latent_dim)
-
-        # Latent Space, generates as mu and logvar for reparameterization
-        # Latent space has the dimensionality of the latent_dim parameter.
-        # Whenever something uses the latent space, it will usually be referring to mu, since z is noisy.
-        # self.fc_mu = nn.Linear(self.encoder_feature_dim, latent_dim)
-        # self.fc_var = nn.Linear(self.encoder_feature_dim, latent_dim)
-
-        # 2. Classifier
         # The classifier is a simple neural network.
         # It takes the mu as input and outputs logits for each class.
         # The number of classes predicted is determined by the num_classes parameter.
         self.concat_dim = int(sum([int(input_dim**0.5) for atlas, input_dim in atlas_input_dims.items()]))
-        #self.concat_dim = int((len(atlas_input_dims)*latent_dim))
         
         self.classifier = nn.Sequential(
             # Layer 2
@@ -229,17 +188,6 @@ class NewVAE(nn.Module):
             # Output
             nn.Linear(int(20), num_classes),
         )
-
-        # # 3. Decoder
-        # self.decoder = nn.Sequential(
-        #     # Layer 1
-        #     nn.Linear(latent_dim + num_xcov_groups, hidden_dim),  # For cross covariance, pass the age information back into the model! 
-        #     nn.LeakyReLU(1e-2),
-        #     nn.Dropout1d(p=dropout_prob),
-        #     # Layer 2
-        #     nn.Linear(hidden_dim, input_dim),
-        #     # nn.Sigmoid()  # For normalization to [0,1]
-        # )
 
         # Set training parameters
         # Set optimizer
@@ -295,12 +243,8 @@ class NewVAE(nn.Module):
         
         if ce_class_weights is not None:
             self.ce_class_weights = torch.tensor(ce_class_weights, dtype=torch.float).to(self.device)
-            logging.info(f"Cross-Entropy Class weights: {self.ce_class_weights}")
-            logging.info(f"Cross-Entropy Class weights shape: {self.ce_class_weights.shape}")
-            #self.cross_entropy = nn.CrossEntropyLoss(weight=self.ce_class_weights, reduction="mean")
         else:
             self.ce_class_weights = None
-            #self.cross_entropy = nn.CrossEntropyLoss(reduction="mean")
 
         # Initialize weights
         self.apply(self.weights_init)
@@ -333,13 +277,7 @@ class NewVAE(nn.Module):
             xcov_pred_max = F.softmax(xcov_pred, dim=1)
             vae_xcov_preds.append(xcov_pred_max)
 
-            # Add these checks before and after fc_mu
-            # print("sub_x stats:", sub_x.min(), sub_x.max(), sub_x.mean(), sub_x.std())
-            # print("fc_mu weight stats:", current_vae["fc_mu"][0].weight.min(), 
-            #     current_vae["fc_mu"][0].weight.max(), current_vae["fc_mu"][0].weight.norm())
-
             mu = current_vae["fc_mu"](sub_x)
-            #print("mu stats before nan check:", mu.min(), mu.max(), mu.mean(), mu.std())
 
             logvar = current_vae["fc_var"](sub_x)
             vae_mus.append(mu)
@@ -441,9 +379,7 @@ class NewVAE(nn.Module):
 
             if self.fine_tuning:
                 batch_labels = torch.roll(batch_labels, shifts=-1, dims=0)
-                
-            # Autocast for mixed precision training (faster training)
-            #with autocast():
+            
             # Forward pass through model
             recon_measurements, mus, logvars, class_logits, xcov_preds, latent_spaces = self(batch_measurements)
 
@@ -561,14 +497,7 @@ class NewVAE(nn.Module):
                 
                 batch_labels = torch.stack([label for label in labels["Diagnosis"]]).to(self.device)  # Shape = [num_classes, batch_size] ? 
                 batch_xcov = torch.transpose(torch.stack([label for label in labels[self.xcov_covar]]), 0, 1).to(self.device)  # Shape = [64, 6]
-                batch_names = names
 
-
-                if self.fine_tuning:
-                    batch_labels = torch.roll(batch_labels, shifts=-1, dims=0)
-
-                # Calculate loss, autocast for mixed precision training (faster)
-                #with autocast():
                 # Forward pass
                 recon_measurements, mus, logvars, class_logits, xcov_preds, latent_spaces = self(batch_measurements)
                 batch_recon_measurements = torch.cat(recon_measurements, dim=1)  # Shape = [64, 680]
@@ -693,7 +622,6 @@ class NewVAE(nn.Module):
                 with autocast():
                 # Forward pass
                     recon_measurments, mus, logvars, class_logits, xcov_preds, z = self(batch_measurements)
-                    # class_logits_soft = torch.softmax(class_logits, dim=1)  # This makes the class logits more comparable between different models!
 
                 start_idx = batch_idx * dataloader.batch_size
                 end_idx = min(start_idx + len(class_logits), total_samples)
@@ -750,7 +678,6 @@ class NewVAE(nn.Module):
 
         # add metadata to anndata object, namely sample names and classifier predictions
         adata.obs_names = sample_names
-        #adata.obs["Diagnosis_pred"] = pd.Categorical(np.concatenate(predictions))
         adata.obs["XCov_pred"] = pd.Categorical(np.concatenate(xcov_predicted_labels))
 
         mapping = {0: "HC",
@@ -760,7 +687,6 @@ class NewVAE(nn.Module):
         adata.obs["Diagnosis_pred"] = pd.Categorical(np.concatenate(predictions))
         adata.obs["Diagnosis_pred"] = adata.obs["Diagnosis_pred"].cat.rename_categories(mapping)
 
-        # return anndata object
         return adata
 
     # Function to initialize weights of the model, using the Kaiming Uniform and Xavier Uniform initializations.
@@ -810,37 +736,6 @@ class NewVAE(nn.Module):
         ortho_loss = total_ortho_loss / num_pairs
         
         return ortho_loss
-    
-    def mutual_information_loss(self, latent_tensors):
-        """
-        Minimize mutual information between latent spaces using correlation.
-        This is computationally simpler than true MI estimation.
-        """
-        if len(latent_tensors) < 2:
-            return torch.tensor(0.0, device=latent_tensors[0].device, requires_grad=True)
-        
-        total_loss = 0.0
-        num_pairs = 0
-        
-        for i, j in itertools.combinations(range(len(latent_tensors)), 2):
-            z_i = latent_tensors[i]  # [batch_size, latent_dim_i]
-            z_j = latent_tensors[j]  # [batch_size, latent_dim_j]
-            
-            # Center the data
-            z_i_centered = z_i - torch.mean(z_i, dim=0, keepdim=True)
-            z_j_centered = z_j - torch.mean(z_j, dim=0, keepdim=True)
-            
-            # Compute cross-covariance matrix
-            batch_size = z_i.shape[0]
-            cross_cov = torch.mm(z_i_centered.T, z_j_centered) / (batch_size - 1)
-            
-            # Minimize Frobenius norm of cross-covariance
-            pair_loss = torch.norm(cross_cov, p='fro') ** 2
-            total_loss += pair_loss
-            num_pairs += 1
-        
-        return total_loss / num_pairs
-
 
     def xcov_loss_fn(self, latent, observed, batch_size):
         """
@@ -1006,7 +901,7 @@ def train_NewVAE(
     no_saving: bool = False
 ):
     # Print / log training start message
-    #log_training_start()
+    log_training_start()
     best_model = model  # Save the best model to then use for latent space plotting at the end of training.
     early_stopping_count = 0
     best_accuracy = 0
@@ -1116,15 +1011,12 @@ def train_NewVAE(
                     # break the training loop
                     break
 
-    #best_model = model.load_state_dict(best_model_wts)   
 
     if not no_val_plotting:
         logging.info(log_title("LATENT AND METRIC PLOTTING"))
 
         if not no_plotting:   
             
-            #best_model = model.load_state_dict(best_model_wts)
-
             # extract latent space and process it
             valid_latent = best_model.extract_latent_space(valid_loader, "Validation Data")
             train_latent = best_model.extract_latent_space(train_loader, "Training Data")
@@ -1262,5 +1154,5 @@ def train_NewVAE(
     logging.info(f"Best Overall Validation Accuracy: {max_accuracy} at epoch {best_epoch}")
     logging.info(f"Validation Accuracy of Best Model: {best_accuracy}")
 
-    #end_logging(config)
+    end_logging(config)
     return best_accuracy, best_model

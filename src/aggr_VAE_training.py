@@ -11,21 +11,11 @@ import logging
 
 from models.aggr_VAE import NewVAE, train_NewVAE
 from models.aggr_VAE_no_XCov import NewVAE_no_XCov, train_NewVAE_no_XCov
-from utils.helper_utils import get_all_data
-
-from utils.data_utils import (
-    load_checkpoint_model, 
-    load_mri_data_NewVAE,
-    process_subjects_XCov,
-    )
+from utils.data_utils import load_checkpoint_model
 
 from utils.logging_utils import (
-    log_and_print,
-    log_data_loading,
-    log_atlas_mode,
     log_model_ready,
     log_model_setup,
-    setup_logging,
     log_title,
     )
 
@@ -49,7 +39,7 @@ def train_model(config, train_loader, valid_loader, annotations, atlas_lengths, 
         torch.cuda.manual_seed_all(config.SEED)
 
     #Initialize Model
-    #log_model_setup()
+    log_model_setup()
     logging.info(log_title("INITIALIZE MODEL"))
     if xcov:
         model = NewVAE(
@@ -122,7 +112,7 @@ def train_model(config, train_loader, valid_loader, annotations, atlas_lengths, 
             }
         )
 
-    #log_model_ready(model)
+    log_model_ready(model)
 
     # Train Model --------------------------------------------------
     logging.info(log_title("START TRAINING CYCLE"))

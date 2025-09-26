@@ -9,8 +9,8 @@ import torch
 import logging
 
 from utils.data_utils import (
-    load_mri_data_NewVAE,
-    process_subjects_XCov,
+    load_mri_data,
+    process_subjects,
     )
 
 from utils.logging_utils import (
@@ -34,36 +34,30 @@ def load_data_for_model(config, train_df, valid_df, resampling_ext, atlas_map):
 
     all_training_data_paths = {}
     for atlas in sorted(atlas_map.keys()):
-        all_training_data_paths[atlas] = os.path.join(config.MRI_DATA_PATH, f"Aggregated_{atlas}_{resampling_ext}")
+        all_training_data_paths[atlas] = os.path.join(config.TRAIN_DATA_PATH, f"{atlas}_data_{resampling_ext}")
 
     logging.info("Loading training and validation data")
 
-    train_subjects, train_annotations, atlas_lengths = load_mri_data_NewVAE(
+    train_subjects, train_annotations, atlas_lengths = load_mri_data(
         annotations=train_df,
         atlas_data_paths=all_training_data_paths,
         covars=config.COVARS,
         diagnoses=config.DIAGNOSES,
-        hdf5=False,
         train_or_test="train",
         # How to scale and subset the data
-        scaling_method="z",
-        scale_per_dataset=True,
         vol_to_use=None,
         fine_tuning=config.FINE_TUNING,
         all_labels=config.ALL_LABELS,
         batch_corrected=config.BATCH_CORRECTION,
     )
 
-    valid_subjects, valid_annotations, _ = load_mri_data_NewVAE(
+    valid_subjects, valid_annotations, _ = load_mri_data(
         annotations=valid_df,
         atlas_data_paths=all_training_data_paths,
         covars=config.COVARS,
         diagnoses=config.DIAGNOSES,
-        hdf5=False,
         train_or_test="train",
         # How to scale and subset the data
-        scaling_method="z",
-        scale_per_dataset=True,
         vol_to_use=None,
         fine_tuning=config.FINE_TUNING,
         all_labels=config.ALL_LABELS,
@@ -92,14 +86,14 @@ def load_data_for_model(config, train_df, valid_df, resampling_ext, atlas_map):
 
     log_and_print(annotations)
 
-    train_loader = process_subjects_XCov(
+    train_loader = process_subjects(
         subjects=train_subjects,
         batch_size=config.BATCH_SIZE,
         shuffle_data=config.SHUFFLE_DATA,
         covars=config.COVARS
     )
 
-    valid_loader = process_subjects_XCov(
+    valid_loader = process_subjects(
         subjects=valid_subjects,
         batch_size=config.BATCH_SIZE,
         shuffle_data=False,

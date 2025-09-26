@@ -14,8 +14,8 @@ import logging
 
 from models.aggr_VAE import NewVAE
 
-from utils.data_utils import (process_subjects_XCov, 
-                                      load_mri_data_NewVAE,
+from utils.data_utils import (process_subjects, 
+                                      load_mri_data,
                                       split_annotations,
                                       split_subjects,
                                       process_latent_space_2D
@@ -80,23 +80,20 @@ class SinglePredictor():
 
         assert self.model_config.PURPOSE != "train"  # Ensuring that we scale the testing data! 
 
-        subjects, _ , atlas_lengths = load_mri_data_NewVAE(
+        subjects, _ , atlas_lengths = load_mri_data(
                 csv_paths=csv_paths,
                 atlas_data_paths=data_paths,
                 scalers_per_atlas=scalers,
                 diagnoses=self.model_config.DIAGNOSES,
-                hdf5=False,
                 train_or_test=self.model_config.PURPOSE,
                 covars=self.model_config.COVARS,
                 # How to scale and subset the data
-                scaling_method="z",
-                scale_per_dataset=True,
                 vol_to_use=self.model_config.VOLUMES,
                 all_labels=self.model_config.ALL_LABELS,
                 batch_corrected=self.model_config.BATCH_CORRECTION
             )
         self.atlas_lengths = atlas_lengths
-        self.dataloader = process_subjects_XCov(subjects=subjects, batch_size=64, shuffle_data=False, covars=[self.model_config.COVARS[0]])
+        self.dataloader = process_subjects(subjects=subjects, batch_size=64, shuffle_data=False, covars=[self.model_config.COVARS[0]])
         
         # Save the extended metadata of the NSS and WhiteCAT datasets to correct the true labels based on codiagnoses.
         nss_path = "/workspace/data/metadata/meta_data_NSS_all_variables.csv"

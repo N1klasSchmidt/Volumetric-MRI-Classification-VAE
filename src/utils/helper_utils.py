@@ -166,6 +166,7 @@ def normalize_and_scale_df(
 # Primary standardization function for aggregated VAE model. If no scalers are passed, new one are fit to the assumed training data. Otherwise, existing scalers are applied to assumed validation or training data. 
 def scale_data_transform(
     df: pd.DataFrame,
+    mtypes: List[str], 
     training_scalers: Dict[str, StandardScaler] = None,  # During scaling of validation and testing data we use the scaler from the training.
     log_transform: bool = True,
 ) -> Tuple[pd.DataFrame, Dict[str, StandardScaler]]:
@@ -189,43 +190,37 @@ def scale_data_transform(
     
     get_training_scalers = {}
 
-    if log_transform:
-        # 1. Log Transformation (same as before, this is good practice)
-        df_copy = df.copy()
-        column_sums = df_copy.sum()
-        log_transformed_df = np.log((10000 * df_copy) / column_sums + 1)
-
-        # Prepare a final DataFrame to populate with scaled values
-        scaled_df = log_transformed_df.copy()
-    else:
-        scaled_df = df.copy()
-
-    # Get unique measurement types from the last level of the column index
-    measurement_types = df.columns.get_level_values(-1).unique()
+    if log_transform:        
+        for suffix in mtypes:
+            mask = df.index.str.endswith(suffix)
+            subset = df[mask].copy()
+            remainder = df[~mask]
+            column_sums = subset.sum()
+            transformed_subset = np.log((10000 * subset) / column_sums + 1)
+            df = pd.concat([remainder, transformed_subset])#.sort_index()
+    
+    scaled_df = df.copy()
 
     # Remove possible rows where all values = 0! 
     rows_with_all_zeros = (df.sum(axis=1) == 0)
-    df = df[~rows_with_all_zeros]
+    scaled_df = scaled_df[~rows_with_all_zeros]
 
     # Scale across all datasets together
-    for m_type in measurement_types:
+    for mtype in mtypes:
         # Identify all columns for the current measurement type
-        cols_to_scale = [col for col in df.columns if col[-1] == m_type]
-
-        if not cols_to_scale:
-            continue
+        rows_to_scale = scaled_df.index.str.endswith(mtype)
 
         # Select the data, transpose it so ROIs are features (columns)
-        data_subset = scaled_df[cols_to_scale]
+        data_subset = scaled_df[rows_to_scale]
         data_transposed = data_subset.T
         
         # Apply StandardScaler
         if training_scalers is None:
             scaler = StandardScaler()
             scaled_transposed = scaler.fit_transform(data_transposed)
-            get_training_scalers[m_type] = scaler
+            get_training_scalers[mtype] = scaler
         else: 
-            scaler = training_scalers[m_type]
+            scaler = training_scalers[mtype]
             scaled_transposed = scaler.transform(data_transposed)
         
         # Transpose back and place into the final DataFrame
@@ -234,7 +229,7 @@ def scale_data_transform(
             index=data_subset.index, 
             columns=data_subset.columns
         )
-        scaled_df[cols_to_scale] = scaled_data
+        scaled_df[rows_to_scale] = scaled_data
 
     return scaled_df, get_training_scalers
 
@@ -286,17 +281,6 @@ def read_hdf5_to_df(filepath: str):
     except Exception as e:
         logging.info(f"Error reading {filepath}: {e}")
         return None
-
-# Transposed data frame as output
-def read_hdf5_to_df_t(filepath: str):
-    if not os.path.exists(filepath):
-        logging.info(f"File {filepath} does not exist")
-        return None
-    try:
-        return pd.read_hdf(filepath, key='atlas_data_t')
-    except Exception as e:
-        logging.info(f"Error reading {filepath}: {e}")
-        return None
     
     
 def split_df(
@@ -321,7 +305,7 @@ def split_df(
 
 # Improved function to resplit the data that takes any number of splits, applying them to the input data and outputting corresponding csv files
 # with the respective splits.
-def resplit_data(df_dict: Dict):
+def resplit_data(df_dict: Dict, output_dir: str, data_type: str = "csv"):
 
     atlases = ["cobra", "lpba40", "neuromorphometrics", "suit", "thalamic_nuclei", "thalamus"]
 
@@ -329,45 +313,36 @@ def resplit_data(df_dict: Dict):
         message = log_title(f"DATA RESPLIT {purpose}")
         logging.info(message)
 
-        if not os.path.exists(f"/workspace/data/raw_extracted_xml_data/{purpose}_xml_data/"):
-            os.mkdir(f"/workspace/data/raw_extracted_xml_data/{purpose}_xml_data/")
+        metadata_path = f"{output_dir}/{purpose}_metadata.csv"
+        df.to_csv(metadata_path)
+
+        if not os.path.exists(f"/workspace/data/raw_data_{purpose}/"):
+            os.mkdir(f"/workspace/data/raw_data_{purpose}/")
 
         df_filenames = df["Filename"].tolist()
 
         for atlas in atlases:
             logging.info(f"Reshuffling the extracted xml data for atlas {atlas}")
-            path_train = f"/workspace/data/raw_extracted_xml_data/train_xml_data/Aggregated_{atlas}.h5"
-            path_test = f"/workspace/data/raw_extracted_xml_data/test_xml_data/Aggregated_{atlas}.h5"
+            atlas_data_path = f"/workspace/data/raw_data_{data_type}/{atlas}_data.{data_type}"
 
-            train_df = read_hdf5_to_df(path_train)
-            test_df = read_hdf5_to_df(path_test)
+            if data_type == "h5":
+                atlas_data = read_hdf5_to_df(atlas_data_path)
+            elif data_type == "csv":
+                atlas_data = pd.read_csv(atlas_data_path, index_col=0, header=0)
+            else: 
+                raise ValueError(f"Unsupported data type: '{data_type}'. Must be 'h5' or 'csv'.")
 
-            total_df = pd.concat([train_df, test_df], axis=1)  # Contains all patients. We subset this to take only the split we want to extract in this loop.
-
-            # We add the new whiteCAT data.
-            # if purpose == "hold_out":
-            #     total_df = add_new_whitecat(total_df, atlas)
-
-            total_raw_filenames = total_df.columns.get_level_values(0).unique().to_list()
-
+            total_raw_filenames = atlas_data.columns.unique().to_list()
             filtered_filenames = [filename for filename in df_filenames 
                                    if filename in total_raw_filenames] 
 
-            new_data = total_df[filtered_filenames]
+            filtered_atlas_data = atlas_data[filtered_filenames]
 
-            new_path = f"/workspace/data/raw_extracted_xml_data/{purpose}_xml_data/Aggregated_{atlas}.csv"
+            new_path = f"/workspace/data/raw_data_{purpose}/{atlas}_data.csv"
 
-            new_data.to_csv(new_path)
-           
-        logging.info(f"New data patient number: {new_data.shape[1]}")
+            filtered_atlas_data.to_csv(new_path)
 
     return 
-
-# Add new whiteCAT data to the total dataset
-def add_new_whitecat(original_df, atlas):
-    new_wc_df = pd.read_csv(f"/workspace/data/whiteCAT_supplement/Aggregated_{atlas}.csv", header=[0,1], index_col=0)
-    new_df = pd.concat([original_df, new_wc_df], axis=1)
-    return new_df
 
 
 # In the case there are more metadata entries than data points, the metadata has to be filtered to prevent shape mismatches. 
@@ -627,40 +602,39 @@ def load_all_data(atlas_map: Dict,
 
     for atlas, atlas_abbrev in atlas_map.items():
         
-        path = f"{save_dir}/Aggregated_{atlas}{batch_corr_ext}.csv"
-        atlas_data_df = pd.read_csv(path, header=[0,1], index_col=0)
+        path = f"{save_dir}/{atlas}_data{batch_corr_ext}.csv"
+        atlas_data_df = pd.read_csv(path, header=0, index_col=0)
 
         filter_files = metadata_df["Filename"].to_list()
         atlas_data_df = atlas_data_df.loc[:, filter_files]
+
+        mtypes = atlas_data_df.index.str.split('^').str.get(-1).unique()
 
         # We scale each of the atlases separately. We perform the scaling BEFORE the over sampling to ensure that each of the features has an equal effect on the generation of new samples.
         if len(batch_corr_ext) == 0: # Batch corrected data has already been scaled! 
             # The training data gets scaled normally. We save the scaler. The validation data should be scaled with the values from the train scaling! 
             if train_scalers_atlases is None:
                 logging.info(f"Step: Fitting and transforming with scaler on {atlas} data")
-                atlas_data_df, train_scalers = scale_data_transform(atlas_data_df, 
-                                                training_scalers=None
-                                                )
+                atlas_data_df, train_scalers = scale_data_transform(atlas_data_df, mtypes, training_scalers=None)
                 get_train_scalers_atlases[atlas] = train_scalers  # train_scalers is a dictionary with measurement_type : StandardScaler
             
             else:
                 logging.info(f"Step: Transforming with scaler on {atlas} data")
                 train_scalers = train_scalers_atlases[atlas]
-                atlas_data_df, _ = scale_data_transform(atlas_data_df,
-                                                training_scalers=train_scalers
-                                               )
+                atlas_data_df, _ = scale_data_transform(atlas_data_df, mtypes, training_scalers=train_scalers)
+
+        prefix = f"{atlas_abbrev}^"
 
         # We convert the mutli-index to a single index adding the volume type to the row name instead
-        df_stacked = atlas_data_df.stack(level='Volume', future_stack=True)
-        df_transformed_index = df_stacked.index.map(lambda x: f"{atlas_abbrev}^{x[0]}^{x[1]}")  # By adding an atlas-abbreviation we can easily trace back the ROIs to the atlas.
-        df_final = df_stacked.set_axis(df_transformed_index, axis=0)
-        df_final.index.name = 'Feature_Combined'
+        atlas_data_df.index = atlas_data_df.index.map(lambda x: f"{prefix}{x}")
+        #atlas_data_df.index.name = 'Feature_Combined'
+
+        #atlas_data_df.index = atlas_data_df.index.str.replace('_', '^')
 
         if joined_df is None:
-            joined_df = df_final
+            joined_df = atlas_data_df
         else:
-            joined_df = pd.concat([joined_df, df_final])
-
+            joined_df = pd.concat([joined_df, atlas_data_df])
     return joined_df, get_train_scalers_atlases
 
 
@@ -778,7 +752,7 @@ def oversample(files_to_oversample: pd.DataFrame,
 
     for atlas, abbrev in atlas_map.items():
         atlas_df = intermediate_df[intermediate_df.index.str.startswith(abbrev)]
-        index_parts = np.array(atlas_df.index.str.split('^', n=2, expand=True).to_list())
+        index_parts = np.array(atlas_df.index.str.split('_', n=2, expand=True).to_list())
 
         original_multiindex = pd.MultiIndex.from_arrays([
             index_parts[:,1],  # Original level 0 (e.g., region names)
@@ -902,7 +876,7 @@ def hybrid_sample(files_to_resample: pd.DataFrame,
                                     "target": "SCHZ",
                                     "minority": "MDD"},
                method: str = "random",
-               save_dir: str = "/workspace/data/raw_extracted_xml_data/train_xml_data",
+               save_dir: str = "/workspace/data/raw_data_train_valid",
                batch_corr_ext: str = "",
                atlas_map = {"cobra": "[C]",
                             "lpba40": "[L]",
@@ -918,14 +892,25 @@ def hybrid_sample(files_to_resample: pd.DataFrame,
     joined_df, scalers = load_all_data(atlas_map, files_to_resample, save_dir, batch_corr_ext=batch_corr_ext)
     rois = joined_df.index.to_list()
 
+    joined_df_t = joined_df.T
+    joined_df_t.index.name = "Filename"
+    joined_df_t = joined_df_t.reset_index()
+
     non_resampled_data = None
     if files_not_to_resample is not None:
         files_not_to_resample = files_not_to_resample[["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]]
         joined_df_rest, _ = load_all_data(atlas_map, files_not_to_resample, save_dir, train_scalers_atlases=scalers, batch_corr_ext=batch_corr_ext)
-        non_resampled_data = pd.merge(joined_df_rest.T, files_not_to_resample, on="Filename", how="left")
+        
+        joined_df_rest_t = joined_df_rest.T
+        joined_df_rest_t.index.name = "Filename"
+        joined_df_rest_t = joined_df_rest_t.reset_index()
+        
+        non_resampled_data = pd.merge(joined_df_rest_t, files_not_to_resample, on="Filename", how="left")
         non_resampled_data = non_resampled_data.drop(columns=["Age", "Sex", "Sex_int"]).set_index("Filename")
 
-    to_be_resampled_data = pd.merge(joined_df.T, files_to_resample, on="Filename", how="left")  # Transpose as we need the columns to contain the features (ROIs)
+    to_be_resampled_data = pd.merge(joined_df_t, files_to_resample, on="Filename", how="left")#.set_index("Filename")  # Transpose as we need the columns to contain the features (ROIs)
+
+    #print(to_be_resampled_data)
     #non_resampled_data = pd.merge(joined_df_rest.T, files_not_to_resample, on="Filename", how="left")
 
     # We subset only the HC and SCHZ patients, so that under sample to the level of SCHZ
@@ -976,7 +961,7 @@ def hybrid_sample(files_to_resample: pd.DataFrame,
 
     # We also adjust the undersample_train data to allow for merging
     undersampled_data["Sample_status"] = "under_sampled"
-    undersampled_data.set_index("Filename", inplace=True)
+    undersampled_data = undersampled_data.set_index("Filename")
 
     balanced_data = pd.concat([undersampled_data, oversampled_data[oversampled_data["Diagnosis"] == class_props["minority"]]])
     balanced_counts = balanced_data["Diagnosis"].value_counts()
@@ -1024,8 +1009,10 @@ def hybrid_sample(files_to_resample: pd.DataFrame,
         df_restored.index = original_multiindex
         df_original = df_restored.unstack('Volume')
 
+        df_original = df_original.astype(float)
+
         atlas_dfs[atlas] = df_original
-        path = f"{save_dir}/Aggregated_{atlas}{batch_corr_ext}_rs.csv"
+        path = f"{save_dir}/{atlas}_data{batch_corr_ext}_rs.csv"
         logging.info(f"Step: Saving resampled {atlas} data to: {path}")
         df_original.to_csv(path)
 

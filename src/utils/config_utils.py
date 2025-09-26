@@ -59,13 +59,13 @@ class Config_XCov_CV:
         # A string to identify your run (will be in name of the output directory)
         RUN_NAME: str,
         # The path to the csv files (contains metadata and filenames of MRI .nii files)
-        TRAIN_CSV: List[str],
+        #TRAIN_CSV: List[str],
         # The paths to the csv files that contain metadata for the testing data
-        TEST_CSV: List[str],
+        #TEST_CSV: List[str],
         # The path to the folder where intermediate normalitzed and scaled data should be saved
-        PROC_DATA_PATH: str,
+        #PROC_DATA_PATH: str,
         # The path to the directory that contains the MRI .nii files
-        MRI_DATA_PATH: str,
+        #MRI_DATA_PATH: str,
         # The folder in which a training specific output directory should be created
         OUTPUT_DIR: str,
         # The column names, from the CSVs, that contain the covariates that you want to be attached to the Subject objects
@@ -97,9 +97,9 @@ class Config_XCov_CV:
         # Only ContrastVAE uses this.
         CONTRAST_TEMPERATURE: float = None,
         # The path to the csv file containing the adversarial training data. Only AdverVAE uses this.
-        ADVER_CSV: str = None,
+        #ADVER_CSV: str = None,
         # The learning rate for the the adversarial training optimizer. Only AdverVAE uses this.
-        ADVER_LR: float = None,
+        #ADVER_LR: float = None,
         # Whether to load a pre-trained model or not. If True, PRETRAIN_MODEL_PATH and PRETRAIN_METRICS_PATH must be set.
         LOAD_MODEL: bool = False,
         # The path to the pre-trained model to load.
@@ -172,7 +172,7 @@ class Config_XCov_CV:
         self.KLDIV_LOSS_WEIGHT = KLDIV_LOSS_WEIGHT
         self.XCOV_LOSS_WEIGHT = XCOV_LOSS_WEIGHT
         self.XCOV_CAT_LOSS_WEIGHT = XCOV_CAT_LOSS_WEIGHT
-        self.ADVER_LR = ADVER_LR
+        #self.ADVER_LR = ADVER_LR
         self.CLASS_LOSS_WEIGHT = CLASS_LOSS_WEIGHT
         self.CONTRAST_TEMPERATURE = CONTRAST_TEMPERATURE
         self.TOTAL_EPOCHS = TOTAL_EPOCHS
@@ -242,18 +242,19 @@ class Config_XCov_CV:
         self.FINAL_EPOCH = self.START_EPOCH + self.TOTAL_EPOCHS
 
         # check that all other paths exist
-        for path in [ADVER_CSV, MRI_DATA_PATH, OUTPUT_DIR]:
-            if path is not None:
-                assert os.path.exists(path), f"Path {path} does not exist"
+        # for path in [ADVER_CSV, MRI_DATA_PATH, OUTPUT_DIR]:
+        #     if path is not None:
+        #         assert os.path.exists(path), f"Path {path} does not exist"
 
         # set up paths
         self.OUTPUT_DIR = OUTPUT_DIR
-        self.TRAIN_CSV = TRAIN_CSV
-        self.ADVER_CSV = ADVER_CSV
-        self.MRI_DATA_PATH = MRI_DATA_PATH
-        self.PROC_DATA_PATH = PROC_DATA_PATH
+        #self.TRAIN_CSV = TRAIN_CSV
+        #self.ADVER_CSV = ADVER_CSV
+        #self.MRI_DATA_PATH = MRI_DATA_PATH
+        #self.PROC_DATA_PATH = PROC_DATA_PATH
         self.ATLAS_NAME = ATLAS_NAME
-        self.TEST_CSV = TEST_CSV
+        #self.TEST_CSV = TEST_CSV
+        self.TRAIN_DATA_PATH = None
 
         # set up path dependent parameters
         if RUN_NAME is None:
