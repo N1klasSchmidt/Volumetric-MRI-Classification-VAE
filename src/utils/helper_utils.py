@@ -53,6 +53,17 @@ def flatten_array(df: pd.DataFrame) -> np.ndarray:
     flat_array = np.nan_to_num(array.flatten())
     return flat_array
 
+def get_atlas_map(atlases: List) -> Dict:
+    atlas_map = {}
+    for atlas in sorted(atlases): 
+        caps = atlas.title()
+
+        if f"[{caps[0]}]" in atlas_map.keys():
+            atlas_map[f"[{caps[:1]}]"] = atlas
+        else: 
+            atlas_map[f"[{caps[0]}]"] = atlas
+    return atlas_map
+
 # Normalization and scaling of input data. Scaling is performed on a per datatype basis. There are two options for scaling
 # - "z" for z-scaling along the ROIs
 # - "iqr" for inter quantile range scaling
@@ -343,6 +354,111 @@ def resplit_data(df_dict: Dict, output_dir: str, data_type: str = "csv"):
             filtered_atlas_data.to_csv(new_path)
 
     return 
+
+# Function that splits a passed meta data file into several parts. A training/validation split, a testing split and optionally a
+# held out testing set are returned. This is all adjusted through a central config file and is performed on a metadata file 
+# that contains all the data. 
+def determine_split(
+        split_config: Dict, 
+        meta: pd.DataFrame
+        ) -> Dict:
+
+    meta_split = {}
+
+    if len(split_config["remove_within_variable"]) == 0:
+
+        train_valid_df, test_df = split_annotations(annotations=meta, proportion=split_config["train_valid_proportion"])
+        meta_split =  {"train_valid": train_valid_df, "test": test_df,}
+
+    else: 
+        removed_subsets = []
+        
+        for idx, var in enumerate(split_config["remove_within_variable"]): 
+            remove_subset = meta[meta[var].isin(split_config["remove_variable_values"][idx])]
+            removed_subsets.append(remove_subset)
+
+        removed_data = pd.concat(removed_subsets).drop_duplicates(keep="first")
+        removed_samples = removed_data["Filename"].to_list()
+
+        filtered_df = meta[~meta["Filename"].isin(removed_samples)]
+        
+        train_valid_df, test_df = split_annotations(annotations=filtered_df, proportion=split_config["train_valid_proportion"])
+        meta_split =  {"train_valid": train_valid_df, "test": test_df,}
+
+        if split_config["test_on_subset"] == "all":
+            meta_split["hold_out_test"] = removed_data
+        else: 
+            if split_config["test_on_subset"] in split_config["remove_within_variable"]:
+                sub_idx = split_config["remove_within_variable"].index(split_config["test_on_subset"])
+                meta_split["hold_out_test"] = removed_subsets[sub_idx]
+            else: 
+                for sub_idx, var_vals in enumerate(split_config["remove_variable_values"]): 
+                    if split_config["test_on_subset"] in var_vals:
+                        _hold_out = removed_subsets[sub_idx]
+
+                        hold_out = _hold_out[_hold_out[split_config["remove_within_variable"][sub_idx]].isin([split_config["test_on_subset"]])]
+                       
+                        meta_split["hold_out_test"] = hold_out
+
+    for purpose, df in meta_split.items(): 
+        print(f"\n Shuffled metadata for {purpose}")
+        print(f"Shape: {df.shape}")
+        print(f"{df.head(5)}")
+
+    return meta_split
+
+
+# This function splits an annotations dataframe into a test set and train set.
+# Both sets have as equal a distribution of diagnoses, datasets and sex as possible.
+def split_annotations(
+    # The annotations dataframe that you want to split into a train and validation part
+    annotations: pd.DataFrame,
+    # The proportion of the data that should be in the first of the two outputted data frames
+    proportion: float = 0.7,
+    # The diagnoses you want to include in the split, defaults to all
+    diagnoses: List[str] = None,
+    # The datasets you want to include in the split, defaults to all
+    datasets: List[str] = None,
+    # The random seed for reproducibility
+    seed: int = 123,
+    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+
+    # Initialize empty dataframes
+    first = pd.DataFrame()
+    second = pd.DataFrame()
+
+    # If no diagnoses are specified, use all diagnoses in the annotations
+    if diagnoses is None:
+        diagnoses = annotations["Diagnosis"].unique()
+
+    # If no datasets are specified, use all datasets in the annotations
+    if datasets is None:
+        datasets = annotations["Dataset"].unique()
+
+    # For each diagnosis, dataset and sex, take a random sample of the data and split it into train and test
+    for diagnosis in diagnoses:
+        for dataset in datasets:
+            #for sex in ["Female", "Male"]:
+                # subset to the current cohort
+            dataset_annotations = annotations[
+                (annotations["Diagnosis"] == diagnosis)
+                & (annotations["Dataset"] == dataset)
+                #& (annotations["Sex"] == sex)
+            ]
+            # shuffle the data
+            dataset_annotations = dataset_annotations.sample(
+                frac=1, random_state=seed
+            )
+            # split the data train_proportion of the way through (usually 80%)
+            split = round(len(dataset_annotations) * proportion)
+
+            # add the split data to the train and test dataframes
+            first = pd.concat(
+                [first, dataset_annotations[:split]], ignore_index=True
+            )
+            second = pd.concat([second, dataset_annotations[split:]], ignore_index=True)
+
+    return first, second
 
 
 # In the case there are more metadata entries than data points, the metadata has to be filtered to prevent shape mismatches. 

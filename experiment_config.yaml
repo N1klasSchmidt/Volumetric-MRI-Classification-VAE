@@ -3,8 +3,9 @@
 # Define the overall run and saving behavior.
 # ===================================================================
 experiment:
-  # A unique name for this run (used for output directory creation)
-  name: "MyProject_AgePrediction_Run01"
+  # A unique name for this run (used for output directory creation). 
+  # If left empty a name is automatically generated.
+  run_name: None
   # Set to True to train a new model; False to load a pre-trained one.
   train_model: True
   # If train_model is False, specify the experiment name/path to load weights from.
@@ -20,7 +21,7 @@ experiment:
 # ===================================================================
 
 data:
-  # Path to the main data directory
+  # Path to the main data directory. Per atlas one file with ALL samples!
   data_dir: "./data/"
   # Format of the raw input data. Options: h5, csv
   # Every data file must have ROI^measurementtype as row indices, and samples as column names.
@@ -34,7 +35,32 @@ data:
     - suit
     - lpba40
     - cobra
+  # What resampling method should be used on the data? Choice between "hybrid", "over" and "under"
+  resampling: "hybrid"
+  # If resampling is either "over" or "under" please specify the specific method
+  # Undersampling provides: "allknn", "nm2", "random" and "tomek"
+  # Oversampling provides: "ADASYN", "SMOTE", "SMOTENC" and "random"
+  resampling_method: ""
+  # Type of measurement to use for training. "None" defaults to all. ("Vgm", "Vwm", "Vcsf")
+  mtype: None
 
+  # --- Train-test split --- 
+  train_test_split: 
+    # Remove a subset of the data before spliting into training / testing. Leave list empty for None.
+    # remove_within_variable and remove_variable_values must have the same length! 
+    remove_within_variable: ["Dataset"]
+    remove_variable_values: [["whiteCAT", "NSS"]]
+    # If a subset is removed, should this subset also be used for testing? 
+    # "all" to use entire removed subset or specify a value from remove_within_variable or remove_variable_values.
+    test_on_subset: "all"
+
+    # Is there any additional, extended metadata available for 
+    extra_metadata_paths: ["/workspace/data/NSS_metadata.csv", "/workspace/data/whiteCAT_metadata.csv"]
+
+    # Split into data for training / validation and testing by taking proportions of entire data
+    train_valid_proportion: 0.8
+    # Split into data for model training and model validation 
+    train_proportion: 0.7
 
 # ===================================================================
 # 3. MODEL SPECIFICATION
@@ -53,9 +79,9 @@ model:
 
 
 # ===================================================================
-# $. EVALUATION
+# 4. EVALUATION
 # Define which steps of the testing and downstream analysis are performed.
 # ===================================================================
 
 analysis: 
-  # Which 
+  # Which testing should be performed
