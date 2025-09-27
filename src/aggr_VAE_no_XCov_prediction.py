@@ -45,7 +45,7 @@ class SinglePredictor_no_XCov():
             # Device which should be used to run the models.
             device: torch.device,
             # Name of the atlas that was originally used to train the model
-            atlas_name: str,
+            run_id: str,
             # Dimension of the latent space encoding
             latent_dim: int,
             # Output for logging
@@ -56,8 +56,6 @@ class SinglePredictor_no_XCov():
             model_path: str = None,
             # Trained model
             model = None,
-            # What model should be used?
-            model_type: str = "xcov",
             # How are the diagnostic labels mapped.
             label_mapping: Dict = None,
             ):
@@ -66,7 +64,7 @@ class SinglePredictor_no_XCov():
         self.model = model
         self.device = device
         self.dataloader = None
-        self.atlas_name = atlas_name
+        self.run_id = run_id
         self.test_annotations = None
         self.latent_dim = latent_dim
         self.logging_config = logging_config
@@ -74,7 +72,6 @@ class SinglePredictor_no_XCov():
         self.metadata_pred = None
         self.nss_df = None
         self.whitecat_df = None
-        self.model_type = model_type
         self.label_mapping = label_mapping
         self.atlas_lengths = None
 
@@ -151,7 +148,7 @@ class SinglePredictor_no_XCov():
             single_model.to(self.device)
             self.model = single_model
 
-        #log_pred_model_ready(model=self.model, atlas_name=self.atlas_name, model_path=self.model_path)
+        #log_pred_model_ready(model=self.model, run_id=self.run_id, model_path=self.model_path)
         return
     
     # This function extracts, processes, plots and saves the latent space of this model
@@ -208,7 +205,7 @@ class SinglePredictor_no_XCov():
             annotations=self.test_annotations,
             umap_neighbors=self.logging_config.UMAP_NEIGHBORS,
             seed=self.logging_config.SEED,
-            atlas_name=self.atlas_name,
+            run_id=self.run_id,
             save_data=True,
             save_path=self.logging_config.LOGGING_DIR,
             timestamp=self.logging_config.TIMESTAMP,
@@ -229,7 +226,7 @@ class SinglePredictor_no_XCov():
                 "Age",
             ],
             data_type="combined",
-            atlas_name=self.atlas_name,
+            run_id=self.run_id,
             save_path=self.logging_config.LOGGING_DIR,
             timestamp=self.logging_config.TIMESTAMP,
             diagnosis_colors=self.model_config.PLOTTING_COLORS,
@@ -319,7 +316,7 @@ class SinglePredictor_no_XCov():
         metadata_pred.set_index("Filename", inplace=True, drop=True)
 
         # Save to CSV
-        #metadata_pred.to_csv(f"{self.logging_config.LOGGING_DIR}/testing_metadata_preds_{self.atlas_name}.csv")
+        #metadata_pred.to_csv(f"{self.logging_config.LOGGING_DIR}/testing_metadata_preds_{self.run_id}.csv")
         self.metadata_pred = metadata_pred
 
         return all_preds, all_labels, all_labels_corr, all_names
@@ -598,7 +595,7 @@ class SinglePredictor_no_XCov():
             plt.tight_layout()
             
             # Save the figure
-            plt.savefig(f"{self.logging_config.LOGGING_DIR}/testing_metadata_preds_{self.atlas_name}_plot_{i+1}.png", 
+            plt.savefig(f"{self.logging_config.LOGGING_DIR}/testing_metadata_preds_{self.run_id}_plot_{i+1}.png", 
                         dpi=300, bbox_inches="tight")
             plt.close()
     
@@ -644,7 +641,7 @@ class SinglePredictor_no_XCov():
 
         # axs[cls].set_xlabel("False Positive Rate")
         # axs[cls].set_ylabel("True Positive Rate")
-        # axs[cls].set_title(f"Receiver Operating Characteristic (ROC) Curve for {cls_name} and {self.atlas_name} model", fontsize=10)
+        # axs[cls].set_title(f"Receiver Operating Characteristic (ROC) Curve for {cls_name} and {self.run_id} model", fontsize=10)
         # axs[cls].legend(loc="lower right")
         # axs[cls].grid(True)
 
@@ -661,8 +658,8 @@ class SinglePredictor_no_XCov():
 
         plt.tight_layout() # Adjust plot to prevent labels from being cut off
 
-        # fig.savefig(f"{self.logging_config.LOGGING_DIR}/{self.atlas_name}_cls_AUROC_{group}.png")
-        # fig.savefig(f"{self.logging_config.LOGGING_DIR}/{self.atlas_name}_cls_AUROC_{group}.svg")
+        # fig.savefig(f"{self.logging_config.LOGGING_DIR}/{self.run_id}_cls_AUROC_{group}.png")
+        # fig.savefig(f"{self.logging_config.LOGGING_DIR}/{self.run_id}_cls_AUROC_{group}.svg")
 
         plt.close()
 
@@ -712,7 +709,7 @@ class SinglePredictor_no_XCov():
                                                                    )
         
         prediction_eval = {
-            "model_name": self.atlas_name,
+            "model_name": self.run_id,
             "accuracy": round(accuracy, 3),
             "precision": round(precision, 3),
             "recall": round(recall, 3),
@@ -753,7 +750,7 @@ class SinglePredictor_no_XCov():
                                                                     )
 
             prediction_eval_ctt = {
-                "model_name": self.atlas_name,
+                "model_name": self.run_id,
                 "accuracy": round(accuracy_ctt, 3),
                 "precision": round(precision_ctt, 3),
                 "recall": round(recall_ctt, 3),
@@ -763,7 +760,7 @@ class SinglePredictor_no_XCov():
             logging.info(f"CTT Subset: {prediction_eval_ctt}")
 
             prediction_eval_non_ctt = {
-                "model_name": self.atlas_name,
+                "model_name": self.run_id,
                 "accuracy": round(accuracy_non_ctt, 3),
                 "precision": round(precision_non_ctt, 3),
                 "recall": round(recall_non_ctt, 3),
@@ -780,7 +777,7 @@ class SinglePredictor_no_XCov():
         #     epoch=999,
         #     save_path=self.logging_config.LOGGING_DIR,
         #     timestamp=self.logging_config.TIMESTAMP,
-        #     atlas_name=self.atlas_name
+        #     run_id=self.run_id
         # )
 
         # self.extract_latent_space(dataloader=self.dataloader)

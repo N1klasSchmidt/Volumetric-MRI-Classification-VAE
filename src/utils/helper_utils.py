@@ -368,7 +368,7 @@ def determine_split(
     if len(split_config["remove_within_variable"]) == 0:
 
         train_valid_df, test_df = split_annotations(annotations=meta, proportion=split_config["train_valid_proportion"])
-        meta_split =  {"train_valid": train_valid_df, "test": test_df,}
+        meta_split =  {"train_valid": train_valid_df, "test_1": test_df,}
 
     else: 
         removed_subsets = []
@@ -383,14 +383,14 @@ def determine_split(
         filtered_df = meta[~meta["Filename"].isin(removed_samples)]
         
         train_valid_df, test_df = split_annotations(annotations=filtered_df, proportion=split_config["train_valid_proportion"])
-        meta_split =  {"train_valid": train_valid_df, "test": test_df,}
+        meta_split =  {"train_valid": train_valid_df, "test_1": test_df,}
 
         if split_config["test_on_subset"] == "all":
-            meta_split["hold_out_test"] = removed_data
-        else: 
+            meta_split["test_2"] = removed_data
+        elif split_config["test_on_subset"] != None: 
             if split_config["test_on_subset"] in split_config["remove_within_variable"]:
                 sub_idx = split_config["remove_within_variable"].index(split_config["test_on_subset"])
-                meta_split["hold_out_test"] = removed_subsets[sub_idx]
+                meta_split["test_2"] = removed_subsets[sub_idx]
             else: 
                 for sub_idx, var_vals in enumerate(split_config["remove_variable_values"]): 
                     if split_config["test_on_subset"] in var_vals:
@@ -398,7 +398,9 @@ def determine_split(
 
                         hold_out = _hold_out[_hold_out[split_config["remove_within_variable"][sub_idx]].isin([split_config["test_on_subset"]])]
                        
-                        meta_split["hold_out_test"] = hold_out
+                        meta_split["test_2"] = hold_out
+        else: 
+            logging.info("Not testing on removed data subset.")
 
     for purpose, df in meta_split.items(): 
         print(f"\n Shuffled metadata for {purpose}")
@@ -991,7 +993,6 @@ def hybrid_sample(files_to_resample: pd.DataFrame,
                class_props: Dict = {"majority": "HC",
                                     "target": "SCHZ",
                                     "minority": "MDD"},
-               method: str = "random",
                save_dir: str = "/workspace/data/raw_data_train_valid",
                batch_corr_ext: str = "",
                atlas_map = {"cobra": "[C]",
@@ -1133,6 +1134,78 @@ def hybrid_sample(files_to_resample: pd.DataFrame,
         df_original.to_csv(path)
 
     return new_metadata, rois, scalers
+
+
+# No resampling is performed, only data scaling
+def no_resample(
+        training_files: pd.DataFrame,
+        validation_files: pd.DataFrame,
+        save_dir: str = "/workspace/data/raw_data_train_valid",
+        batch_corr_ext: str = "",
+        atlas_map: Dict = {"cobra": "[C]",
+                    "lpba40": "[L]",
+                    "neuromorphometrics": "[N]",
+                    "suit": "[S]",
+                    },
+        ) -> pd.DataFrame:
+    
+    # Step 1: Create a merged dataframe of the stacked volume measurements across all atlases. Normalize and Scale
+    logging.info("Step: Merging and scaling all data (unless batch corrected)")
+
+    training_files = training_files[["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]]
+    joined_training_df, scalers = load_all_data(atlas_map, training_files, save_dir, batch_corr_ext=batch_corr_ext)
+    rois = joined_training_df.index.to_list()
+
+    joined_training_df_t = joined_training_df.T
+    joined_training_df_t.index.name = "Filename"
+    joined_training_df_t = joined_training_df_t.reset_index()
+
+    validation_data = None
+    if validation_files is not None:
+        validation_files = validation_files[["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]]
+        joined_validation_df, _ = load_all_data(atlas_map, validation_files, save_dir, train_scalers_atlases=scalers, batch_corr_ext=batch_corr_ext)
+        
+        joined_validation_df_t = joined_validation_df.T
+        joined_validation_df_t.index.name = "Filename"
+        joined_validation_df_t = joined_validation_df_t.reset_index()
+        
+        validation_data = pd.merge(joined_validation_df_t, validation_files, on="Filename", how="left")
+        validation_data = validation_data.drop(columns=["Age", "Sex", "Sex_int"]).set_index("Filename")
+
+    training_data = pd.merge(joined_training_df_t, training_files, on="Filename", how="left") # Transpose as we need the columns to contain the features (ROIs)
+
+    training_data = training_data.drop(columns=["Age", "Sex", "Sex_int"])
+
+    logging.info("Step: Returning data to original per-atlas format")
+    
+    if validation_data is not None:
+        total_df = pd.concat([training_data, validation_data]).drop(columns=["Dataset", "Diagnosis", "Sample_status"]).T
+    else: 
+        total_df = training_data.drop(columns=["Dataset", "Diagnosis", "Sample_status"]).T
+
+    atlas_dfs = {}
+
+    for atlas, abbrev in atlas_map.items():
+        atlas_df = total_df[total_df.index.str.startswith(abbrev)]
+        index_parts = np.array(atlas_df.index.str.split('^', n=2, expand=True).to_list())
+
+        original_multiindex = pd.MultiIndex.from_arrays([
+            index_parts[:,1], 
+            index_parts[:,2]
+        ], names=[None, 'Volume'])
+        
+        df_restored = atlas_df.copy()
+        df_restored.index = original_multiindex
+        df_original = df_restored.unstack('Volume')
+
+        df_original = df_original.astype(float)
+
+        atlas_dfs[atlas] = df_original
+        path = f"{save_dir}/{atlas}_data{batch_corr_ext}_nors.csv"
+        logging.info(f"Step: Saving unsampled / original {atlas} data to: {path}")
+        df_original.to_csv(path)
+
+    return rois, scalers
 
 
 # This function is tailored to plot the batch corrected results after transforming the data with batch_corrected_preprocessing()
