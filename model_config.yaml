@@ -1,0 +1,23 @@
+# ===================================================================
+# MODEL PARAMETERS
+# Define the crucial parameters for the model!
+# ===================================================================
+
+model_parameters: 
+  # General parameters
+  learning_rate: 0.002
+  weight_decay: 0.0006699
+  epochs: 250
+  batch_size: 128 
+  dropout_probability: 0.2
+  hidden_dimension_size: 100
+  # Loss weights
+  classification_loss: 20
+  reconstruction_loss: 10
+  kldiv_loss: 1
+  # Keep regardless if an XCov model is trained or not.
+  xcov_loss: 5
+  xcov_class_loss: 5 
+  # Misc. parameters 
+  early_stopping: True 
+

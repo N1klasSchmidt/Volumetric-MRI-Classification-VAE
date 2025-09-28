@@ -1,7 +1,5 @@
 import yaml
 from RUN_aggr_VAE import run_VAE_experiment
-# This is a placeholder that will hold the final simplified interface to run different experiments
-# Crucially this should "hide" all the code behind a few function calls and variable definitions
 
 # Specify: 
 # - Which groups should be used for testing? 
@@ -11,5 +9,8 @@ from RUN_aggr_VAE import run_VAE_experiment
 # - Is the input data either csv or h5? 
 # - Should a model be trained or simply a model loaded? Loaded from which other experiment? 
 
-config = yaml.safe_load("experiment_config.yaml")
-run_VAE_experiment(config)
+experiment_config = yaml.safe_load("experiment_config.yaml")
+model_config = yaml.safe_load("model_config.yaml")
+
+run_VAE_experiment(experiment_config, model_config)
+

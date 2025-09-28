@@ -37,6 +37,7 @@ from aggr_VAE_loading import load_data_for_model
 from aggr_VAE_prediction import SinglePredictor
 from aggr_VAE_no_XCov_prediction import SinglePredictor_no_XCov
 from models.aggr_VAE import NewVAE
+from models.aggr_VAE_no_XCov import NewVAE_no_XCov
 
 from utils.downstream_utils import (
     NewVAE_Wrapper,
@@ -47,12 +48,13 @@ from utils.downstream_utils import (
     get_all_correlations,
     rename_nss_wc,
     run_interaction_term_analysis,
-    predict_ctt_risk_from_latent,
+    predict_unseen_risk_from_latent,
     predict_clinical_from_latent,
     trace_latent_to_roi,
     saliency_from_latent,
     get_latent_feature_correlation_plot,
-    visualize_saliency
+    visualize_saliency,
+    aggregate_testing_data
 )
 
 # ====================================================================================================
@@ -63,7 +65,7 @@ from utils.downstream_utils import (
 # ====================================================================================================
 
 
-def run_VAE_experiment(experiment_config: Dict):
+def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
     
     atlas_map = get_atlas_map(experiment_config["data"]["input_atlases"])
     metadata = pd.read_csv(experiment_config["data"]["metadata_path"], header=[0])
@@ -105,24 +107,6 @@ def run_VAE_experiment(experiment_config: Dict):
         diagnosis_colors_plotting[diag] = color 
 
     # ------------------------------ STEP 3: Prepare the config file and parameters of the run ------------------------------
-
-    params = pd.read_csv(experiment_config["model"]["params"]).set_index("Unnamed: 0")
-    params.index.name = None
-
-    atlas_name = "aggr_VAE"
-
-    weight_decay = params.loc["weight_decay", :][atlas_name]
-    learning_rate = params.loc["learning_rate", :][atlas_name]
-    latent_dim = int(params.loc["latent_dim", :][atlas_name])
-    num_epochs = int(params.loc["num_epochs", :][atlas_name])
-    kldiv_weight = params.loc["kl_div_weight", :][atlas_name]
-    class_weight = params.loc["class_weight", :][atlas_name]
-    recon_weight = params.loc["recon_weight", :][atlas_name]
-    xcov_weight = params.loc["xcov_weight", :][atlas_name]
-    xcov_cls_weight = params.loc["xcov_cls_weight", :][atlas_name]
-
-    # Initialize the config file for this run. 
-
     config = Config_XCov_CV(
             # General Parameters
             RUN_NAME=run_name,
@@ -135,16 +119,16 @@ def run_VAE_experiment(experiment_config: Dict):
             PRETRAIN_METRICS_PATH=None,
             CONTINUE_FROM_EPOCH=0,
             # Loss Parameters
-            RECON_LOSS_WEIGHT=recon_weight,
-            KLDIV_LOSS_WEIGHT=kldiv_weight,
-            CLASS_LOSS_WEIGHT=class_weight,
-            XCOV_LOSS_WEIGHT=xcov_weight,
-            XCOV_CAT_LOSS_WEIGHT=xcov_cls_weight,
+            RECON_LOSS_WEIGHT=model_config["model_parameters"]["reconstruction_loss"],
+            KLDIV_LOSS_WEIGHT=model_config["model_parameters"]["kldiv_loss"],
+            CLASS_LOSS_WEIGHT=model_config["model_parameters"]["classification_loss"],
+            XCOV_LOSS_WEIGHT=model_config["model_parameters"]["xcov_loss"],
+            XCOV_CAT_LOSS_WEIGHT=model_config["model_parameters"]["xcov_class_loss"],
             # Learning and Regularization
-            TOTAL_EPOCHS=num_epochs,
-            LEARNING_RATE=learning_rate,
-            WEIGHT_DECAY=weight_decay,
-            EARLY_STOPPING=True,
+            TOTAL_EPOCHS=model_config["model_parameters"]["epochs"],
+            LEARNING_RATE=model_config["model_parameters"]["learning_rate"],
+            WEIGHT_DECAY=model_config["model_parameters"]["weight_decay"],
+            EARLY_STOPPING=model_config["model_parameters"]["early_stopping"],
             STOP_LEARNING_RATE=4e-8,
             SCHEDULE_ON_VALIDATION=True,
             SCHEDULER_PATIENCE=6,
@@ -157,19 +141,19 @@ def run_VAE_experiment(experiment_config: Dict):
             METRICS_ROLLING_WINDOW=10,
             PLOTTING_COLORS=diagnosis_colors_plotting,
             # Data Parameters
-            BATCH_SIZE=128,
-            DIAGNOSES=experiment_config["data"]["diagnoses"],
+            BATCH_SIZE=model_config["model_parameters"]["batch_size"],
+            DIAGNOSES=experiment_config["data"]["diagnoses"],   ################################################ THIS MIGHT BE A PROBLEM! INCLUDES ALL! 
             COVARS=experiment_config["model"]["covariate_names"],
             # Misc.
             LATENT_DIM=latent_dim,
             SHUFFLE_DATA=False,
             FINE_TUNING=False,
-            CE_CLASS_WEIGHTS=None, #[1.0, 20.0, 1.0],
+            CE_CLASS_WEIGHTS=None,
             ALL_LABELS=False,
             PURPOSE="train",
             VOLUMES=vol_to_use,
-            DROPOUT_PROB=0.2,
-            HIDDEN_DIM=100,
+            DROPOUT_PROB=model_config["model_parameters"]["dropout_probability"],
+            HIDDEN_DIM=model_config["model_parameters"]["hidden_dimension_size"],
         )
     config.update_working_dir()
     config.update_dirs()
@@ -243,6 +227,9 @@ def run_VAE_experiment(experiment_config: Dict):
     xcov_groups_train = train_annotations_split["Dataset"].unique().tolist()
     xcov_groups_valid = valid_annotations_split["Dataset"].unique().tolist()
 
+    training_diagnoses = train_annotations_split["Diagnosis"].unique().tolist()
+    config.DIAGNOSES = training_diagnoses
+
     assert len(xcov_groups_train) == len(xcov_groups_valid)
 
     num_xcov_groups = len(xcov_groups_train)
@@ -268,31 +255,53 @@ def run_VAE_experiment(experiment_config: Dict):
                                                 xcov=experiment_config["model"]["xcov"])
     else: 
         logging.info(log_title("LOAD MODEL"))
-        # If the model has already been trained and we only want to perform testing
-        model_architecture = NewVAE(
-            num_classes=len(config.DIAGNOSES),
-            learning_rate=config.LEARNING_RATE,
-            weight_decay=config.WEIGHT_DECAY,
-            device=config.DEVICE,
-            scaler=GradScaler(),
-            kldiv_loss_weight=config.KLDIV_LOSS_WEIGHT,
-            recon_loss_weight=config.RECON_LOSS_WEIGHT,
-            class_loss_weight=config.CLASS_LOSS_WEIGHT,
-            xcov_weight=config.XCOV_LOSS_WEIGHT,
-            xcov_cat_weight=config.XCOV_CAT_LOSS_WEIGHT,
-            latent_dim=config.LATENT_DIM,
-            atlas_input_dims={'cobra': 104, 'lpba40': 112, 'neuromorphometrics': 408, 'suit': 56},
-            schedule_on_validation=config.SCHEDULE_ON_VALIDATION,
-            scheduler_patience=config.SCHEDULER_PATIENCE,
-            scheduler_factor=config.SCHEDULER_FACTOR,
-            num_xcov_groups=config.NUM_XCOV_GROUPS,
-            ce_class_weights=config.CE_CLASS_WEIGHTS,
-            hidden_dim=config.HIDDEN_DIM,
-            dropout_prob=config.DROPOUT_PROB,
-        )
+
+        if experiment_config["model"]["xcov"]:
+            model_architecture = NewVAE(
+                num_classes=len(config.DIAGNOSES),
+                learning_rate=config.LEARNING_RATE,
+                weight_decay=config.WEIGHT_DECAY,
+                device=config.DEVICE,
+                scaler=GradScaler(),
+                kldiv_loss_weight=config.KLDIV_LOSS_WEIGHT,
+                recon_loss_weight=config.RECON_LOSS_WEIGHT,
+                class_loss_weight=config.CLASS_LOSS_WEIGHT,
+                xcov_weight=config.XCOV_LOSS_WEIGHT,
+                xcov_cat_weight=config.XCOV_CAT_LOSS_WEIGHT,
+                latent_dim=config.LATENT_DIM,
+                atlas_input_dims=atlas_lengths,
+                schedule_on_validation=config.SCHEDULE_ON_VALIDATION,
+                scheduler_patience=config.SCHEDULER_PATIENCE,
+                scheduler_factor=config.SCHEDULER_FACTOR,
+                num_xcov_groups=config.NUM_XCOV_GROUPS,
+                ce_class_weights=config.CE_CLASS_WEIGHTS,
+                hidden_dim=config.HIDDEN_DIM,
+                dropout_prob=config.DROPOUT_PROB,
+            )
+        else: 
+            model_architecture = NewVAE_no_XCov(
+                num_classes=len(config.DIAGNOSES),
+                learning_rate=config.LEARNING_RATE,
+                weight_decay=config.WEIGHT_DECAY,
+                device=config.DEVICE,
+                scaler=GradScaler(),
+                kldiv_loss_weight=config.KLDIV_LOSS_WEIGHT,
+                recon_loss_weight=config.RECON_LOSS_WEIGHT,
+                class_loss_weight=config.CLASS_LOSS_WEIGHT,
+                xcov_weight=config.XCOV_LOSS_WEIGHT,
+                xcov_cat_weight=config.XCOV_CAT_LOSS_WEIGHT,
+                latent_dim=config.LATENT_DIM,
+                atlas_input_dims=atlas_lengths,
+                schedule_on_validation=config.SCHEDULE_ON_VALIDATION,
+                scheduler_patience=config.SCHEDULER_PATIENCE,
+                scheduler_factor=config.SCHEDULER_FACTOR,
+                num_xcov_groups=config.NUM_XCOV_GROUPS,
+                ce_class_weights=config.CE_CLASS_WEIGHTS,
+                hidden_dim=config.HIDDEN_DIM,
+                dropout_prob=config.DROPOUT_PROB,
+            )
 
         trained_model = load_checkpoint_model(model=model_architecture, model_filename=trained_model_path)
-
 
     # ------------------------------ STEP 6: Perform the testing with the trained model ------------------------------
 
@@ -367,155 +376,151 @@ def run_VAE_experiment(experiment_config: Dict):
         get_latent_feature_correlation_plot(testing_config.LOGGING_DIR, atlas_map, atlas_lengths)
 
 
-        # If both testings have been performed, we can plot the joint results in a summarized umap.
-        # if internal_test and external_test: 
-        #     logging.info(log_title("PLOTTING JOINT UMAP"))
-        #     load_path = config.LOGGING_DIR
-        #     total_testing_data = aggregate_testing_data(load_path)
-        #     plot_umap(total_testing_data, ["Age", "Sex", "Dataset", "Diagnosis", "Use", "Pred_class"], load_path)
-
-
         # ------------------------------ STEP 7: Downstream analysis of model outputs on testing data ------------------------------
 
-        logging.info(log_title("DOWNSTREAM ANALYSIS"))
+        if experiment_config["analysis"][testing_run]["downstream"]: 
+            logging.info(log_title("DOWNSTREAM ANALYSIS"))
+            
+            assert downstream_config["extra_metadata_path"] is not None, "To perform downstream analysis, pass additional metadata!"
 
-        total_metadata = pd.read_csv("data/relevant_metadata/full_metadata_filtered_bpfree.csv")
-        nss_df = pd.read_csv("data/metadata/meta_data_NSS_all_variables.csv")
-        wc_df = pd.read_csv("data/metadata/meta_data_whiteCAT_all_variables_bpfree.csv")
+            downstream_config = experiment_config["analysis"][testing_run]
 
-        latent_data = pd.read_csv(f"{testing_config.LOGGING_DIR}/latent_space_data.csv", index_col=0)
-        model_predictions = pd.read_csv(f"{testing_config.LOGGING_DIR}/testing_metadata_extended.csv", index_col=0)
+            extended_metadata = pd.read_csv(downstream_config["extra_metadata_path"])
 
-        nsswc_df = rename_nss_wc(nss_df, wc_df)
-                
-                
+            assert extended_metadata["Filename"].to_list().isin(metadata["Filename"]).all(), "Not all extended metadata entried found in full metadata!"
 
-        logging.info(log_title("CORRELATION ANALYSIS"))
+            extended_metadata_only_new = extended_metadata.copy()
+            for var in ["Age", "Diagnosis", "Sex", "Dataset", "Codiagnosis"]: 
+                if var in extended_metadata_only_new.columns.to_list():
+                    extended_metadata_only_new.drop(columns=[var], inplace=True)
 
-        save_path = os.path.join(testing_config.LOGGING_DIR, "CORR")
-        os.makedirs(save_path)
-        diagnoses = ["SCHZ", "MDD", "CTT"]
+            latent_data = pd.read_csv(f"{testing_config.LOGGING_DIR}/latent_space_data.csv", index_col=0)
+            model_predictions = pd.read_csv(f"{testing_config.LOGGING_DIR}/testing_metadata_extended.csv", index_col=0)
 
-        nsswc_df_dropped = nsswc_df.drop(columns=["Age", "Diagnosis", "Sex", "Dataset", "Codiagnosis"])
 
-        # Compute correlations for each diagnosis separately
-        get_all_correlations(clinical_data=nsswc_df_dropped,
-                            model_data=model_predictions,
-                            metadata=total_metadata,
-                            diagnoses=diagnoses,
-                            save_path=save_path,
-                            ) 
-        
-        # Compute correlations across all diagnoses
-        get_all_correlations(clinical_data=nsswc_df_dropped,
-                            model_data=model_predictions,
-                            metadata=total_metadata,
-                            diagnoses=None,
-                            save_path=save_path,
-                            )
-        
-        diagnoses = ["SCHZ", "MDD", "HC"]
-        # Determine statsitically significant interaction terms and save the plotted results
-        run_interaction_term_analysis(model_data=model_predictions,
-                                    clinical_data=nsswc_df_dropped,
-                                    metadata=total_metadata,
+            if downstream_config["correlation_analysis"]:
+                logging.info(log_title("CORRELATION ANALYSIS"))
+
+                save_path = os.path.join(testing_config.LOGGING_DIR, "CORR")
+                if not os.path.exists(save_path):
+                    os.makedirs(save_path)
+
+                # Compute correlations for each diagnosis separately
+                get_all_correlations(clinical_data=extended_metadata_only_new,
+                                    model_data=model_predictions,
+                                    metadata=metadata,
+                                    diagnoses=testing_run_diagnoses,
                                     save_path=save_path,
-                                    diagnoses=diagnoses)
-        
-        logging.info(log_title("LATENT FEATURE ANALYSIS"))
+                                    ) 
+                
+                # Compute correlations across all diagnoses
+                get_all_correlations(clinical_data=extended_metadata_only_new,
+                                    model_data=model_predictions,
+                                    metadata=metadata,
+                                    diagnoses=None,
+                                    save_path=save_path,
+                                    )
+                
+            
+            if downstream_config["latent_feature_analysis"]:
+                logging.info(log_title("LATENT FEATURE ANALYSIS"))
 
-        save_path = os.path.join(testing_config.LOGGING_DIR, "LATENT")
-        os.makedirs(save_path)
+                save_path = os.path.join(testing_config.LOGGING_DIR, "LATENT")
+                os.makedirs(save_path)
 
-        # We predict two things from the latent vectors: 1. A "CTT-Risk" and 2. Clinical variables like Age or nss_motor
-        # Besides simply knowing which latent features are involved in this prediction we can also determine which ROIs these features correspond with.
-        # For this there are again two approaches:
-        # 1. Use (Gradient)SHAP to compute which ROIs correspond with which latent feature. This is also just handy as an overview.
-        # 2. Use a "chained Saliency" where we use the chain rule to propagate the gradients (=coeff.) of a linear model through the model encoder to get the ROI gradients. 
+                # We predict two things from the latent vectors: 1. A "CTT-Risk" and 2. Clinical variables like Age or nss_motor
+                # Besides simply knowing which latent features are involved in this prediction we can also determine which ROIs these features correspond with.
+                # For this there are again two approaches:
+                # 1. Use (Gradient)SHAP to compute which ROIs correspond with which latent feature. This is also just handy as an overview.
+                # 2. Use a "chained Saliency" where we use the chain rule to propagate the gradients (=coeff.) of a linear model through the model encoder to get the ROI gradients. 
 
-        ########## CTT-Risk Prediction ##########
-        ctt_risk_results, ctt_risk_latent_importance, ctt_risk_coeff = predict_ctt_risk_from_latent(clinical=nsswc_df,
-                                                        latent=latent_data,
-                                                        save_path=save_path,
-                                                        split="random",)
-        
-        # with open(f"{save_path}/significant_latent_feaures.json", "w") as json_file:
-        #     json.dump(ctt_risk_latent_importance, json_file, indent=4)
-        
-        ctt_risk_results.save(f"{save_path}/ctt_risk_summary.pkl")
-        logging.info(f"Results saved to: {save_path}/ctt_risk_summary.pkl")
+                unseen_diagnoses = [diag for diag in testing_run_diagnoses if not diag in experiment_config["data"]["diagnoses"]]
 
-        ########## Clinical Variable Prediction ##########
-        clinical_results, clinical_latent_importance, clinical_coeff = predict_clinical_from_latent(clinical=nsswc_df,
-                                                                latent=latent_data,
-                                                                save_path=save_path)
-        
-        with open(f"{save_path}/significant_latent_feaures.json", "w") as json_file:
-            json.dump(clinical_latent_importance, json_file, indent=4)
+                for unseen_diagnosis in unseen_diagnoses:
+                    
+                    extended_metadata_unseen_diag = extended_metadata.copy()
+                    extended_metadata_unseen_diag[unseen_diagnosis] = (extended_metadata_unseen_diag["Diagnosis"] == unseen_diagnosis).astype(int)
 
-        clinical_results.to_csv(f"{save_path}/clinical_pred_results.csv")
-        logging.info(f"Results saved to: {save_path}/clinical_pred_results.csv")
-        
-        ########## Analysis of ROIs ##########
-        logging.info(log_title("MAP ROI - LATENT"))
-        # 1. GradientSHAP for all latent features
-        logging.info(log_title("Indirect with SHAP"))
-        latent_dim = len(latent_data.columns.to_list())
+                    ########## Unseen-Diagnosis-Risk Prediction ##########
+                    unseen_risk_results, unseen_risk_latent_importance, unseen_risk_coeff = predict_unseen_risk_from_latent(
+                        target=unseen_diagnosis,
+                        clinical=extended_metadata_unseen_diag,
+                        latent=latent_data,
+                        save_path=save_path,)
+                    
+                    unseen_risk_results.save(f"{save_path}/{unseen_diagnosis}_risk_summary.pkl")
+                    logging.info(f"Results saved to: {save_path}/{unseen_diagnosis}_risk_summary.pkl")
 
-        if experiment_config["model"]["xcov"]:
-            wrapped_model_for_latent = NewVAE_Wrapper_latent(trained_model, config.DEVICE)
-        else:
-            wrapped_model_for_latent = NewVAE_no_XCov_Wrapper_latent(trained_model, config.DEVICE)
+                    unseen_risk_filename = saliency_from_latent(unseen_risk_coeff, predictor, config, rois, save_path, config.DEVICE)
 
-        mapping_roi_to_latent = trace_latent_to_roi(config.DEVICE, wrapped_model_for_latent, valid_dataloader, rois, 3, latent_dim)
-        mapping_roi_to_latent.to_csv(f"{save_path}/map_latent_to_roi.csv")
+                    if "neuromorphometrics" in experiment_config["data"]["input_atlases"]: 
+                        visualize_saliency(unseen_risk_filename, "neuromorphometrics", ["Vgm", "Vwm", "Vcsf"], method="weighted")
 
-        merge_dicts = ctt_risk_latent_importance | clinical_latent_importance
+                ########## Clinical Variable Prediction ##########
+                clinical_results, clinical_latent_importance, clinical_coeff = predict_clinical_from_latent(clinical=extended_metadata,
+                                                                        latent=latent_data,
+                                                                        save_path=save_path)
+                
+                with open(f"{save_path}/significant_latent_feaures.json", "w") as json_file:
+                    json.dump(clinical_latent_importance, json_file, indent=4)
 
-        for pred_var, features in merge_dicts.items():
-            print(f"\n")
-            logging.info(f"########## Mapping for: {pred_var} ##########")
-            for feature in features: 
-                feature_rois = mapping_roi_to_latent.loc[f"Feature_{feature}"].to_list()
-                logging.info(f"\t{feature_rois}")
+                clinical_results.to_csv(f"{save_path}/clinical_pred_results.csv")
+                logging.info(f"Results saved to: {save_path}/clinical_pred_results.csv")
+                
+                ########## Analysis of ROIs ##########
+                logging.info(log_title("MAP ROI - LATENT"))
 
-        # 2. Chained Saliency
-        logging.info(log_title("Direct with Saliency"))
+                latent_dim = len(latent_data.columns.to_list())
 
-        ctt_risk_filename = saliency_from_latent(ctt_risk_coeff, predictor, config, rois, save_path, config.DEVICE)
+                if experiment_config["model"]["xcov"]:
+                    wrapped_model_for_latent = NewVAE_Wrapper_latent(trained_model, config.DEVICE)
+                else:
+                    wrapped_model_for_latent = NewVAE_no_XCov_Wrapper_latent(trained_model, config.DEVICE)
 
-        if len(clinical_coeff.keys()) > 0:
-            _ = saliency_from_latent(clinical_coeff, predictor, config, rois, save_path, config.DEVICE)
+                mapping_roi_to_latent = trace_latent_to_roi(config.DEVICE, wrapped_model_for_latent, valid_dataloader, rois, 3, latent_dim)
+                mapping_roi_to_latent.to_csv(f"{save_path}/map_latent_to_roi.csv")
 
-        # ctt_risk_filename = saliency_from_latent_integrated_gradients(ctt_risk_coeff, hold_out_predictor, config, rois, save_path, config.DEVICE)
-        # _ = saliency_from_latent_integrated_gradients(clinical_coeff, hold_out_predictor, config, rois, save_path, config.DEVICE)
+                for pred_var, features in clinical_latent_importance.items():
+                    print(f"\n")
+                    logging.info(f"########## Mapping for: {pred_var} ##########")
+                    for feature in features: 
+                        feature_rois = mapping_roi_to_latent.loc[f"Feature_{feature}"].to_list()
+                        logging.info(f"\t{feature_rois}")
 
-        # We can visualize these results
-        visualize_saliency(ctt_risk_filename, "neuromorphometrics", ["Vgm", "Vwm", "Vcsf"], method="weighted")
+                if len(clinical_coeff.keys()) > 0:
+                    _ = saliency_from_latent(clinical_coeff, predictor, config, rois, save_path, config.DEVICE)
             
 
-        logging.info(log_title("FEATURE IMPORTANCE"))
+            if downstream_config["SHAP_analysis"]: 
+                logging.info(log_title("FEATURE IMPORTANCE"))
 
-        save_path = os.path.join(testing_config.LOGGING_DIR, "SHAP")
-        os.makedirs(save_path)
+                save_path = os.path.join(testing_config.LOGGING_DIR, "SHAP")
+                os.makedirs(save_path)
 
-        if experiment_config["model"]["xcov"]: 
-            wrapped_model = NewVAE_Wrapper(trained_model, config.DEVICE)
-        else: 
-            wrapped_model = NewVAE_no_XCov_Wrapper(trained_model, config.DEVICE)
+                if experiment_config["model"]["xcov"]: 
+                    wrapped_model = NewVAE_Wrapper(trained_model, config.DEVICE)
+                else: 
+                    wrapped_model = NewVAE_no_XCov_Wrapper(trained_model, config.DEVICE)
 
-        idx_mapping = {0: "HC", 1: "MDD", 2: "SCHZ"}
+                model_outputs = sorted(train_annotations_split["Diagnosis"].unique().to_list())
 
-        for idx, label in idx_mapping.items(): # Iterate through HC, MDD and SCHZ
+                for idx, label in enumerate(model_outputs): 
 
-            logging.info(f"Running SHAP for {label}")
-            run_shap_analysis(wrapped_model, 
-                            dataloader=valid_dataloader,
-                            target_class_idx=idx,
-                            class_label=label,
-                            device=config.DEVICE, 
-                            feature_names=rois,
-                            dir_name=save_path)
+                    logging.info(f"Running SHAP for {label}")
+                    run_shap_analysis(wrapped_model, 
+                                    dataloader=valid_dataloader,
+                                    target_class_idx=idx,
+                                    class_label=label,
+                                    device=config.DEVICE, 
+                                    feature_names=rois,
+                                    dir_name=save_path)
+    
+    # If both testings have been performed, we can plot the joint results in a summarized umap.
+    if experiment_config["analysis"]["joint_umap"]:
+        logging.info(log_title("PLOTTING JOINT UMAP"))
+        load_path = config.LOGGING_DIR
+        total_testing_data = aggregate_testing_data(load_path, config.DIAGNOSES)
+        plot_umap(total_testing_data, ["Age", "Sex", "Dataset", "Diagnosis", "Pred_class"], load_path)  #################################### ADJUST COLORS! 
 
     logging.info("Experiment concluded successfully!")
     return

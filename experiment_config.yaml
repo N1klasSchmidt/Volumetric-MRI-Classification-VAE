@@ -95,8 +95,15 @@ analysis:
     downstream: False
     # Is there additional metadata associated with this testing data? 
     extra_metadata_path: None
+    correlation_analysis: True
+    SHAP_analysis: True
+    latent_feature_analysis: True
 
   test_2: 
-    downstream: False
+    downstream: True
     extra_metadata_path: ""
+    correlation_analysis: True
+    SHAP_analysis: True
+    latent_feature_analysis: True
 
+  joint_umap: True

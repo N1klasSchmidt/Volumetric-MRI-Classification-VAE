@@ -525,25 +525,18 @@ def calculate_vif(
 
 # Use logistic regression on the latent features to predict a "CTT-risk".
 # Finally try to link this CTT-risk with clinical variables through fitting a simple linear model
-def predict_ctt_risk_from_latent(
+def predict_unseen_risk_from_latent(
+        # Target diagnosis
+        target: str, 
         # Input metadata with clinical scores of the NSS and whiteCAT patients
         clinical: pd.DataFrame, 
         # Input data with the extracted latent features of the NSS and whiteCAT patients
         latent: pd.DataFrame,
         # Path to save the produced figures and data
         save_path: str,
-        # Method to use when splitting latent data into training and testing data
-        split: str = "random",
         ): 
     
     clinical, subset_index = add_codiagnosis_label(clinical)
-
-    # We correct the diagnoses in the original whiteCAT and NSS clinical data, as this is incorrec
-    all_metadata = pd.read_csv("/workspace/data/relevant_metadata/full_metadata_filtered_bpfree.csv", index_col=0, header=0)
-    nss_data = all_metadata[all_metadata["Dataset"] == "NSS"].set_index("Filename")
-    wc_data = all_metadata[all_metadata["Dataset"] == "whiteCAT"].set_index("Filename")
-    correct_data = pd.concat([nss_data, wc_data], axis=0).rename(columns={"Diagnosis": "Diagnosis_corr"})[["Diagnosis_corr"]]
-    clinical = pd.concat([clinical, correct_data], axis=1).drop(columns=["Diagnosis"]).rename(columns={"Diagnosis_corr": "Diagnosis"})
 
     # Sort data frames to ensure that the indices match!
     sorted_clinical = clinical.sort_index()
@@ -551,19 +544,11 @@ def predict_ctt_risk_from_latent(
 
     results_coeff = {}
 
-    if split == "random":
-        # Splitting into training and testing randomly
-        X_train, X_test, y_train, y_test = train_test_split(sorted_latent, sorted_clinical["catatonia_icd11_v1"].to_numpy(), test_size=0.3, random_state=42)
-    
-    elif split == "dataset":
-        # Splitting into training and testing by dataset
-        X_train = sorted_latent.loc[sorted_clinical.query("Dataset == 'whiteCAT'").index.to_list(),:]
-        X_test = sorted_latent.loc[sorted_clinical.query("Dataset == 'NSS'").index.to_list(),:]
-        y_train = sorted_clinical.loc[sorted_clinical.query("Dataset == 'whiteCAT'").index.to_list(),:]["catatonia_icd11_v1"]
-        y_test = sorted_clinical.loc[sorted_clinical.query("Dataset == 'NSS'").index.to_list(),:]["catatonia_icd11_v1"]
+    # Splitting into training and testing randomly
+    X_train, X_test, y_train, y_test = train_test_split(sorted_latent, sorted_clinical[target].to_numpy(), test_size=0.3, random_state=42)
 
     # Perform training of CTT-risk prediction using latent features
-    logging.info("Using logisitc regression to predict CTT risk from latent feature vectors")
+    logging.info(f"Using logisitc regression to predict {target} risk from latent feature vectors")
     log_reg = LogisticRegression(random_state=42)
     log_reg.fit(X_train, y_train)
     probabilities = log_reg.predict_proba(X_test)  # testing
@@ -571,8 +556,8 @@ def predict_ctt_risk_from_latent(
 
     grad_y_wrt_z = log_reg.coef_
 
-    results_coeff["CTT-Risk"] = {"grads": grad_y_wrt_z,
-                                 "train_samples": X_train.index.to_list()}
+    results_coeff[target] = {"grads": grad_y_wrt_z,
+                             "train_samples": X_train.index.to_list()}
 
     # Return the Feature indices of the most relevant features for CTT-risk prediction (determined by absolute coefficient value)
     params = abs(log_reg.coef_[0]).tolist()
@@ -581,7 +566,7 @@ def predict_ctt_risk_from_latent(
     sorted_indices = [index for value, index in indexed_list]
     logging.info(f"Most relevant latent features: {sorted_indices[:10]}")
 
-    ctt_risk_important_features = {"CTT-Risk": sorted_indices[:10]}
+    unseen_risk_important_features = {target: sorted_indices[:10]}
 
     # Evaluate the performance of the logistic regression model using a confusion matrix and comparing CTT-risk prediction between CTT and non-CTT SCHZ patients. 
     logging.info("Evaluating the performance of logistic regression model")
@@ -589,14 +574,6 @@ def predict_ctt_risk_from_latent(
 
     logging.info("Evaluating the performance of Random Forest model")
     predict_ctt_risk_from_latent_rf(clinical_data=sorted_clinical, latent_data=sorted_latent, save_path=save_path)
-
-    logging.info("Finding significant correlations between CTT-risk and clinical features")
-    testing_subset_clinical = sorted_clinical.loc[X_test.index.to_list(),:].drop(columns=["catatonia_icd11_v1"])
-    testing_subset_clinical["ctt_risk"] = probabilities[:, 1]
-    correlation_results = spearman_corr_bh_correction(testing_subset_clinical, 'ctt_risk')
-
-    print("Checking for inf/nan values:")
-    print(f"NaN values: {testing_subset_clinical.isna().sum().sum()}")
 
     testing_subset_clinical = testing_subset_clinical.dropna()
 
@@ -606,7 +583,7 @@ def predict_ctt_risk_from_latent(
     testing_subset_nss_wc_vif = testing_subset_clinical[features]
     results, summary = fit_lin_model("ctt_risk", testing_subset_nss_wc_vif)# [["gaf_score", "ctt_risk"]])
 
-    return results, ctt_risk_important_features, results_coeff
+    return results, unseen_risk_important_features, results_coeff
 
 # A simple helper function that adds to our clinical data a new column with the codiagnosis.
 # This is either MDD or SCHZ (after filtering of the bipolar patients)
@@ -1943,32 +1920,20 @@ def visualize_saliency(
 
 # To be used after internal and external testing to then plot the joined latent spaces and compare 
 # the distributions of diagnoses. This data is then passed to the umap helper function.
-def aggregate_testing_data(load_path: str) -> pd.DataFrame:
+def aggregate_testing_data(load_path: str, diagnoses: List) -> pd.DataFrame:
+    latent_data_found = list(Path(load_path).rglob(f"*latent_space_data.csv"))
+    
+    logging.info(f"Found the following latent testing data: {latent_data_found}")
 
-    internal_testing_latent = pd.read_csv(f"{load_path}/internal_testing/latent_space_data.csv", header=0, index_col=0).reset_index().rename(columns={"index": "Filename"}).set_index("Filename")
-    external_testing_latent = pd.read_csv(f"{load_path}/external_testing/latent_space_data.csv", header=0, index_col=0).reset_index().rename(columns={"index": "Filename"}).set_index("Filename")
+    all_data = []
 
-    internal_testing_meta = pd.read_csv(f"{load_path}/internal_testing/testing_metadata_preds_testing.csv", header=0, index_col=0)
-    external_testing_meta = pd.read_csv(f"{load_path}/external_testing/testing_metadata_preds_testing.csv", header=0, index_col=0)
-
-    internal_data = pd.concat([internal_testing_latent, internal_testing_meta], axis=1)
-    external_data = pd.concat([external_testing_latent, external_testing_meta], axis=1)
-
-    internal_data["Use"] = "Internal"
-    external_data["Use"] = "External"
-
-    total_data = pd.concat([internal_data, external_data]).drop(columns=["HC", "MDD", "SCHZ", "Pred_labels", "Sex_int"]).reset_index()
-
-    # We want to correct the CTT labels to also account for their MDD or SCHZ codiagnosis
-    codiagnosis_meta = pd.read_csv(f"{load_path}/external_testing/testing_metadata_extended.csv", index_col=0, header=0)[["Filename", "Diagnosis", "Codiagnosis"]]
-
-    ctt_mask = total_data['Diagnosis'] == "CTT"
-
-    f2_filenames = codiagnosis_meta[(codiagnosis_meta["Diagnosis"] == "CTT") & (codiagnosis_meta["Codiagnosis"].astype(str).str.contains("F2|f2", regex=True))].Filename.tolist()
-    f2_mask = total_data["Filename"].isin(f2_filenames)
-    total_data.loc[ctt_mask, "Diagnosis"] = "CTT-MDD"
-    total_data.loc[f2_mask, "Diagnosis"] = "CTT-SCHZ"
-
+    for path in latent_data_found:
+        latent_data = pd.read_csv(path, header=0, index_col=0).reset_index().rename(columns={"index": "Filename"}).set_index("Filename")
+        testing_meta = pd.read_csv(f"{path.parents[0]}/internal_testing/testing_metadata_preds_testing.csv", header=0, index_col=0)
+        concat_data = pd.concat([latent_data, testing_meta], axis=1)
+        all_data.append(concat_data)
+    
+    total_data = pd.concat(all_data).drop(columns=diagnoses+["Pred_labels", "Sex_int"]).reset_index()
     total_data.set_index("Filename", inplace=True)
 
     return total_data
