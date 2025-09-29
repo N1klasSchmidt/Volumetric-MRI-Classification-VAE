@@ -14,6 +14,7 @@ from typing import List, Dict, Tuple
 import logging
 from pathlib import Path
 import itertools
+import copy
 
 from models.aggr_VAE import NewVAE
 from models.aggr_VAE_no_XCov import NewVAE_no_XCov
@@ -380,62 +381,6 @@ def trace_latent_to_roi(
 
 ################################################## 3. Predict with Latent ##################################################
 
-# Rename the shared columns of the raw NSS and whiteCAT metadata and merge to single external testing metadata.
-def rename_nss_wc(nss_df: pd.DataFrame, 
-                  wc_df: pd.DataFrame
-                  ) -> pd.DataFrame:
-    
-    logging.info("Merging and renaming NSS and whiteCAT columns")
-
-    renaming = {
-    "Shared features": [
-        "Filename", "Dataset", "Diagnosis", "Age", "Sex", "catatonia_icd11_v1",
-        "Olanzapin", "panss_p", "panss_n",
-        "panss_g", "panss_total", "bprs_total", "ncrs_motor",
-        "ncrs_affective", "ncrs_behavior", "ncrs_total", "nss_total",
-        "nss_motor", "gaf_score", "bis11_attentional", "bis11_motor",
-        "bis11_nonplanning", "bis11_total", "Codiagnosis"
-    ],
-    "NSS": [
-        "Filename", "Dataset", "Diagnosis", "Age", "Sex", "catatonia_icd11_v1",
-        "OLZe", "PANSS_p", "PANSS_n",
-        "PANSS_g", "PANSS_total", "BPRS_total", "NCRS_motor",
-        "NCRS_affective", "NCRS_behavior", "NCRS_total", "NSS_total",
-        "NSS_motor", "GAF_currently", "BIS11_attentional", "BIS11_motor",
-        "BIS11_nonplanning", "BIS11_total", "Diagnosis_y"
-    ],
-    "whiteCAT": [
-        "Filename", "Dataset", "Diagnosis", "Age", "Sex", "catatonia_icd11_v1",
-        "olz_total_v1", "panss_p_v1", "panss_n_v1",
-        "panss_g_v1", "panss_total_v1", "bprs_total_v1", "ncrs_motor_v1",
-        "ncrs_affective_v1", "ncrs_behavior_v1", "ncrs_total_v1",
-        "nssc_total_v1", "nssc_motor_v1", "gaf_score_v1", "bis_attentional_v1",
-        "bis_motor_v1", "bis_non_planning_v1", "bis_total_v1", "ana_icd10"
-    ]
-    }
-
-    df_nss_cols = renaming["NSS"]
-    df_whitecat_cols = renaming["whiteCAT"]
-
-    nss_subset_df = nss_df[df_nss_cols]
-    wct_subset_df = wc_df[df_whitecat_cols]
-
-    rename_map_nss = {}
-    for i in range(len(renaming["Shared features"])):
-        rename_map_nss[renaming["NSS"][i]] = renaming["Shared features"][i]
-
-    rename_map_whitecat = {}
-    for i in range(len(renaming["Shared features"])):
-        rename_map_whitecat[renaming["whiteCAT"][i]] = renaming["Shared features"][i]
-
-    nss_subset_df = nss_subset_df.rename(columns=rename_map_nss)
-    wct_subset_df = wct_subset_df.rename(columns=rename_map_whitecat)
-
-    nss_wc_df = pd.concat([nss_subset_df, wct_subset_df])
-    nss_wc_df = nss_wc_df.set_index("Filename", drop=True)
-    #nss_wc_df.drop(columns=["Age", "Diagnosis", "Sex", "Dataset"], inplace = True)
-    return nss_wc_df
-
 # Computes Spearman correlation and Benjamini-Hochberg corrected p-values for a target column against all other columns in a DataFrame.
 # Returns a data frame with the columns 'column', 'spearman_rho', 'p_value', and 'bh_corrected_p_value'
 def spearman_corr_bh_correction(
@@ -534,9 +479,9 @@ def predict_unseen_risk_from_latent(
         latent: pd.DataFrame,
         # Path to save the produced figures and data
         save_path: str,
+        # Color mapping for diagnoses
+        colors: Dict,
         ): 
-    
-    clinical, subset_index = add_codiagnosis_label(clinical)
 
     # Sort data frames to ensure that the indices match!
     sorted_clinical = clinical.sort_index()
@@ -570,38 +515,26 @@ def predict_unseen_risk_from_latent(
 
     # Evaluate the performance of the logistic regression model using a confusion matrix and comparing CTT-risk prediction between CTT and non-CTT SCHZ patients. 
     logging.info("Evaluating the performance of logistic regression model")
-    compute_logreg_performance(probabilities, X_test, y_test, subset_index, sorted_clinical, save_path)
+    compute_logreg_performance(probabilities, X_test, y_test, sorted_clinical, save_path, target=target)
 
     logging.info("Evaluating the performance of Random Forest model")
-    predict_ctt_risk_from_latent_rf(clinical_data=sorted_clinical, latent_data=sorted_latent, save_path=save_path)
+    predict_unseen_risk_from_latent_rf(clinical_data=sorted_clinical, latent_data=sorted_latent, save_path=save_path, target=target, color_map=colors)
 
     testing_subset_clinical = testing_subset_clinical.dropna()
 
     # We compute the Variance Inflation Factor and filter out highly colinear variables before training our model!
-    vif_results = calculate_vif(testing_subset_clinical, 'ctt_risk')
-    features = vif_results.query("VIF < 10 | feature == 'ctt_risk'")["feature"].to_list() + ["ctt_risk"]
+    vif_results = calculate_vif(testing_subset_clinical, f'{target}_risk')
+    features = vif_results.query(f"VIF < 10 | feature == '{target}_risk'")["feature"].to_list() + [f"{target}_risk"]
     testing_subset_nss_wc_vif = testing_subset_clinical[features]
-    results, summary = fit_lin_model("ctt_risk", testing_subset_nss_wc_vif)# [["gaf_score", "ctt_risk"]])
+    results, summary = fit_lin_model(f"{target}_risk", testing_subset_nss_wc_vif)# [["gaf_score", "ctt_risk"]])
 
     return results, unseen_risk_important_features, results_coeff
 
-# A simple helper function that adds to our clinical data a new column with the codiagnosis.
-# This is either MDD or SCHZ (after filtering of the bipolar patients)
-def add_codiagnosis_label(nss_wc_df: pd.DataFrame) -> Tuple[pd.DataFrame, List]:
-    nss_wc_df["Codiagnosis_str"] = np.nan
-    for idx, row in nss_wc_df.iterrows():
-        nss_wc_df.loc[idx, "Codiagnosis_str"] = "SCHZ" if "F2" in str(nss_wc_df.loc[idx, "Codiagnosis"]) or "f2" in str(nss_wc_df.loc[idx, "Codiagnosis"]) else "MDD"
-        nss_wc_df.loc[idx, "Codiagnosis_str"] = "MDD" if "F3" in str(nss_wc_df.loc[idx, "Codiagnosis"]) else "SCHZ"
-
-    schz_nss_wc_df = nss_wc_df.query("Codiagnosis_str == 'SCHZ'")
-    schz_index = schz_nss_wc_df.index.to_list()
-
-    return nss_wc_df, schz_index
 
 # Evaluate the performance of the logistic regression model used to predict the CTT label from latent features.
 # Generates a confusion matrix and an array of boxplots showing the per class predictions. 
 # A "subset_index" can be specified to filter the results of only a spcific diagnosis subset e.g. SCHZ
-def compute_logreg_performance(probabilities, X_test, y_test, subset_index, sorted_nss_wc_df, save_path):
+def compute_logreg_performance(probabilities, X_test, y_test, sorted_clinical, save_path, target):
     
     # Make a confusion matrix
     ctt_predictions = np.argmax(probabilities, axis=1)
@@ -616,11 +549,11 @@ def compute_logreg_performance(probabilities, X_test, y_test, subset_index, sort
 
     plt.figure()
     sns.heatmap(cf_matrix, annot=labels, fmt="", cmap='Blues')
-    plt.title("Confusion Matrix of CTT-risk prediction")
+    plt.title(f"Confusion Matrix of {target}-risk prediction")
     plt.xlabel("Predicted")
     plt.ylabel("True")
-    plt.savefig(f"{save_path}/CTT_risk_confusion_matrix.png")
-    plt.savefig(f"{save_path}/CTT_risk_confusion_matrix.svg")
+    plt.savefig(f"{save_path}/{target}_risk_confusion_matrix.png")
+    plt.savefig(f"{save_path}/{target}_risk_confusion_matrix.svg")
     plt.close()
 
     probabilities_df = pd.DataFrame(probabilities, columns=['probability_class_0', 'probability_class_1'])
@@ -628,16 +561,9 @@ def compute_logreg_performance(probabilities, X_test, y_test, subset_index, sort
     # Assign the index of the X_test DataFrame to the new probabilities DataFrame
     probabilities_df.index = X_test.index
 
-    # keep_indices = []
-    # for file in probabilities_df.index.to_list():
-    #     if file in subset_index: 
-    #         keep_indices.append(file)
-
-    # probabilities_df = probabilities_df.copy().loc[keep_indices,:] 
-
     # Join the original sorted_nss_wc_df with the probabilities DataFrame on the index
     # We use .loc[X_test.index] to ensure we only join for the patients in the test set and maintain the correct order
-    patients_with_probabilities = sorted_nss_wc_df.loc[X_test.index].join(probabilities_df)
+    patients_with_probabilities = sorted_clinical.loc[X_test.index].join(probabilities_df)
     patients_with_probabilities["Prob_percent"] = patients_with_probabilities["probability_class_1"]*100
 
     fig, ax = plt.subplots(figsize=(7, 4))
@@ -652,38 +578,37 @@ def compute_logreg_performance(probabilities, X_test, y_test, subset_index, sort
     annotator.apply_and_annotate()
 
     plt.xlabel("Diagnostic Label")
-    plt.ylabel("CTT-risk prediction")
+    plt.ylabel(f"{target}-risk prediction")
 
     plt.ylim(0.0, 100.0)
     ax.yaxis.set_major_formatter(mtick.PercentFormatter())
-    plt.title("CTT-risk prediction stratified by CTT diagnosis (Mann-Whitney U)", pad=30)
+    plt.title(f"{target}-risk prediction stratified by CTT diagnosis (Mann-Whitney U)", pad=30)
     plt.tight_layout()
-    plt.savefig(f"{save_path}/CTT_risk_comparison.png")
-    plt.savefig(f"{save_path}/CTT_risk_comparison.svg")
+    plt.savefig(f"{save_path}/{target}_risk_comparison.png")
+    plt.savefig(f"{save_path}/{target}_risk_comparison.svg")
     return
 
 # Use a random forest approach to classify MDD, SCHZ and CTT from the extracted latent space of the NSS and whiteCAT patients. 
 # Results are then directly plotted as boxplots, showing the per class distributions.
-def predict_ctt_risk_from_latent_rf(
+def predict_unseen_risk_from_latent_rf(
     # Input metadata
     clinical_data: pd.DataFrame, 
     # Input latent data
     latent_data: pd.DataFrame, 
     # Path where the results should be saved
     save_path: str,
+    # What is the target diagnosis
+    target: str,
+    # What is the color mapping? 
+    color_map: Dict, 
     ):
+    
+    current_diagnoses = clinical_data["Diagnosis"].unique().to_list()
 
-    all_metadata = pd.read_csv("/workspace/data/relevant_metadata/full_metadata_filtered_bpfree.csv", index_col=0, header=0)
-    nss_data = all_metadata[all_metadata["Dataset"] == "NSS"].set_index("Filename")
-    wc_data = all_metadata[all_metadata["Dataset"] == "whiteCAT"].set_index("Filename")
-    correct_data = pd.concat([nss_data, wc_data], axis=0).rename(columns={"Diagnosis": "Diagnosis_corr"})[["Diagnosis_corr"]]
+    total_data = pd.concat([latent_data, clinical_data["Diagnosis"]], axis=1)
 
-    corr_nss_wc_df = pd.concat([clinical_data, correct_data], axis=1).drop(columns=["Diagnosis"])
-
-    total_data = pd.concat([latent_data, corr_nss_wc_df["Diagnosis_corr"]], axis=1)
-
-    X = total_data.drop('Diagnosis_corr', axis=1)
-    y = total_data['Diagnosis_corr']
+    X = total_data.drop('Diagnosis', axis=1)
+    y = total_data['Diagnosis']
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
 
@@ -693,42 +618,31 @@ def predict_ctt_risk_from_latent_rf(
     y_pred = model.predict(X_test)
     probabilities = model.predict_proba(X_test)
 
-    probabilities_df = pd.DataFrame(probabilities, columns=['probability_CTT', 'probability_MDD', "probability_SCHZ"])
+    probabilities_df = pd.DataFrame(probabilities, columns=current_diagnoses)
     probabilities_df.index = X_test.index
     patients_with_probabilities = pd.concat([total_data.loc[X_test.index], probabilities_df], axis=1)
 
     # Create figure with three subplots
     fig, axes = plt.subplots(1, 3, figsize=(12, 5))
 
-    # Define the probability columns and their corresponding colors
-    probability_columns = ['probability_CTT', 'probability_MDD', 'probability_SCHZ']
-    subplot_colors = ['#A882DD', '#C8E9A0', '#D64045']  # Purple, Light green, Red
+    diag_combinations = list(itertools.combinations(patients_with_probabilities["Diagnosis"].unique().tolist(), 2))
 
-    # Color map for true diagnostic labels
-    diagnosis_color_map = {
-        'MDD': 'blue',  # Light green
-        'CTT': 'gray',  # Purple
-        'SCHZ': 'red'  # Red
-    }
-    diag_combinations = list(itertools.combinations(patients_with_probabilities["Diagnosis_corr"].unique().tolist(), 2))
-
-    for i, prob_col in enumerate(probability_columns):
+    for i, prob_col in enumerate(current_diagnoses):
         # Create boxplot showing this probability across all true diagnostic labels
         sns.boxplot(data=patients_with_probabilities, 
-                    x="Diagnosis_corr", 
+                    x="Diagnosis", 
                     y=prob_col, 
-                    hue="Diagnosis_corr",
-                    palette=diagnosis_color_map,
+                    hue="Diagnosis",
+                    palette=color_map,
                     width=0.6,
                     ax=axes[i])
         
-        annotator = Annotator(axes[i], diag_combinations, data=patients_with_probabilities, x="Diagnosis_corr", y=prob_col)
+        annotator = Annotator(axes[i], diag_combinations, data=patients_with_probabilities, x="Diagnosis", y=prob_col)
         annotator.configure(test='Mann-Whitney', text_format='star', loc='outside')
         annotator.apply_and_annotate()
         
         # Customize subplot
-        predicted_class = prob_col.replace('probability_', '')
-        axes[i].set_title(f'{predicted_class} Probability', pad=20)
+        axes[i].set_title(f'{prob_col} Probability', pad=20)
         axes[i].set_xlabel('True Diagnostic Label')
         axes[i].set_ylabel('Probability' if i == 0 else '')  # Only show ylabel on first subplot
         axes[i].set_ylim(0.0, 1.15)
@@ -738,8 +652,8 @@ def predict_ctt_risk_from_latent_rf(
     fig.suptitle('Predicted Class Probabilities by True Diagnostic Label', fontsize=16, y=1.02)
 
     plt.tight_layout()
-    plt.savefig(f"{save_path}/CTT_risk_comparison_RF.png")
-    plt.savefig(f"{save_path}/CTT_risk_comparison_RF.svg")
+    plt.savefig(f"{save_path}/{target}_risk_comparison_RF.png")
+    plt.savefig(f"{save_path}/{target}_risk_comparison_RF.svg")
 
 
 # Predict clinical variables using the latent space features. This is the approach used by Yamaguchi et al.
@@ -909,7 +823,7 @@ def saliency_from_latent(
         hold_out_data = predictor.dataloader
         hold_out_data_subset = hold_out_data #torch.utils.data.Subset(hold_out_data, subset_indices)
 
-        hold_out_model = predictor.model
+        model = copy.deepcopy(predictor.model)
 
         first_batch_measurements, _, _ = next(iter(hold_out_data_subset))
         total_abs_saliency = torch.zeros_like(first_batch_measurements[0], device=device)
@@ -929,12 +843,19 @@ def saliency_from_latent(
             if total_abs_saliency is None:
                 total_abs_saliency = torch.zeros_like(batch_measurements, requires_grad=False)
 
-            hold_out_model.eval()
-            with torch.enable_grad():
-            # Forward pass to get latent space representation z
-                _, _, _, _, _, z = hold_out_model.forward(batch_measurements)
-                batch_grad_y_wrt_z = torch.from_numpy(grad_y_wrt_z).to(device, dtype=z.dtype).repeat(z.shape[0], 1)
-                z.backward(gradient=batch_grad_y_wrt_z, retain_graph=True)
+            model.eval()
+            if predictor.xcov:
+                with torch.enable_grad():
+                # Forward pass to get latent space representation z
+                    _, _, _, _, _, z = model.forward(batch_measurements)
+                    batch_grad_y_wrt_z = torch.from_numpy(grad_y_wrt_z).to(device, dtype=z.dtype).repeat(z.shape[0], 1)
+                    z.backward(gradient=batch_grad_y_wrt_z, retain_graph=True)
+            else:
+                with torch.enable_grad():
+                # Forward pass to get latent space representation z
+                    _, _, _, _, z = model.forward(batch_measurements)
+                    batch_grad_y_wrt_z = torch.from_numpy(grad_y_wrt_z).to(device, dtype=z.dtype).repeat(z.shape[0], 1)
+                    z.backward(gradient=batch_grad_y_wrt_z, retain_graph=True)
 
             # Accumulate the absolute saliency map
             total_abs_saliency += batch_measurements.grad.abs().sum(dim=0)
@@ -991,7 +912,7 @@ def saliency_from_latent_integrated_gradients(
         else:
             raise ValueError(f"Unknown baseline type: {baseline_type}")
     
-    def compute_integrated_gradients(model, measurements, grad_y_wrt_z, baseline, n_steps):
+    def compute_integrated_gradients(model, measurements, grad_y_wrt_z, baseline, n_steps, xcov):
         """Compute integrated gradients for a batch"""
         integrated_grads = torch.zeros_like(measurements)
         
@@ -1002,7 +923,10 @@ def saliency_from_latent_integrated_gradients(
             interpolated_input.requires_grad_(True)
             
             # Forward pass
-            _, _, _, _, _, z = model.forward(interpolated_input)
+            if xcov:
+                _, _, _, _, _, z = model.forward(interpolated_input)
+            else:
+                _, _, _, _, z = model.forward(interpolated_input)
             
             # Backward pass
             batch_grad_y_wrt_z = torch.from_numpy(grad_y_wrt_z).to(device, dtype=z.dtype).repeat(z.shape[0], 1)
@@ -1028,7 +952,7 @@ def saliency_from_latent_integrated_gradients(
         hold_out_data = predictor.dataloader
         hold_out_data_subset = hold_out_data
 
-        hold_out_model = predictor.model
+        model = copy.deepcopy(predictor.model)
 
         first_batch_measurements, _, _ = next(iter(hold_out_data_subset))
         total_abs_saliency = torch.zeros_like(first_batch_measurements[0], device=device)
@@ -1050,15 +974,16 @@ def saliency_from_latent_integrated_gradients(
             # Generate baseline
             batch_baseline = get_baseline(batch_measurements, baseline)
             
-            hold_out_model.eval()
+            model.eval()
             with torch.enable_grad():
                 # Compute integrated gradients
                 integrated_grads = compute_integrated_gradients(
-                    hold_out_model, 
+                    model, 
                     batch_measurements, 
                     grad_y_wrt_z, 
                     batch_baseline, 
-                    n_steps
+                    n_steps,
+                    xcov=predictor.xcov,
                 )
 
             # Accumulate the absolute saliency map
@@ -1363,22 +1288,24 @@ def get_all_correlations(
         # Save path for outputted correlation data
         save_path: str,
         diagnoses: List, 
-        datasets="NSS_WC"
+        datasets="no_dataset_subset"
         ):
 
-    joined_df = correct_nss_wc_labels(model_data, clinical_data, metadata, ["correct_diagnosis", "Confidence", "Pred_labels"])
+
+    raw_model_pred_df = model_data.copy().set_index("Filename", drop=True)
+    joined_df = raw_model_pred_df.join(clinical_data).drop(columns=["Confidence", "Pred_labels"])
 
     if diagnoses is not None:
-        logging.info("Computing correlations between model outputs and clinical variables for CTT patients")
-        if "CTT" in diagnoses:
-            joined_df_diagnosis_subset = joined_df[joined_df["Diagnosis"] == "CTT"]
+        for unseen_diagnosis in diagnoses:
+            logging.info(f"Computing correlations between model outputs and clinical variables for {unseen_diagnosis} patients")
+            joined_df_diagnosis_subset = joined_df[joined_df["Diagnosis"] == unseen_diagnosis]
             num_joined_df_diagnosis_subset = joined_df_diagnosis_subset.select_dtypes(include=np.number)
 
             numeric_model = num_joined_df_diagnosis_subset[["HC", "MDD", "SCHZ", "Misdiagnosis", "Uncertainty"]]
             metadata_cols = ~num_joined_df_diagnosis_subset.columns.isin(["HC", "MDD", "SCHZ", "Misdiagnosis", "Uncertainty"])
             numeric_meta = num_joined_df_diagnosis_subset.iloc[:, metadata_cols]
 
-            compute_correlations(model_pred_df=numeric_model, metadata_df=numeric_meta, save_path=save_path, diagnosis="CTT", datasets=datasets)
+            compute_correlations(model_pred_df=numeric_model, metadata_df=numeric_meta, save_path=save_path, diagnosis=unseen_diagnosis, datasets=datasets)
     else: 
         logging.info("Computing correlations between model outputs and clinical variables across ALL diagnoses")
         num_joined_df_diagnosis_subset = joined_df.select_dtypes(include=np.number)
@@ -1402,17 +1329,13 @@ def fit_lin_model_int(
 
     num_joined_df = joined_df.select_dtypes(include=np.number).copy()
 
-    numeric_model = num_joined_df[["HC", "MDD", "SCHZ", "Misdiagnosis", "Uncertainty"]]
-    # metadata_cols = ~num_joined_df.columns.isin(["HC", "MDD", "SCHZ", "Misdiagnosis", "Uncertainty"])
-    # numeric_meta = num_joined_df.iloc[:, metadata_cols]
-    # numeric_meta.drop(columns=["catatonia_icd11_v1"], inplace=True)
+    numeric_model = num_joined_df[["HC", "MDD", "SCHZ", "Misdiagnosis", "Uncertainty", "Confidence", "Pred_labels"]]
 
     model_features = numeric_model.columns.tolist()
-    # meta_features = numeric_meta.columns.tolist()
 
     # Select only the meta data features and drop all the model features save for the target feature specified above
     model_feat_to_drop = [feature for feature in model_features if feature != target]
-    subset_num_joined = num_joined_df.drop(columns=model_feat_to_drop+["catatonia_icd11_v1", "Confidence", "Pred_labels"]) # We want only the target feature and metadata columns
+    subset_num_joined = num_joined_df.drop(columns=model_feat_to_drop) # We want only the target feature and metadata columns
 
     subset_num_joined.dropna(inplace=True)
 
@@ -1744,13 +1667,14 @@ def run_interaction_term_analysis(
         diagnoses: List = ["SCHZ", "MDD", "HC"]
         ):
 
-    joined_df = correct_nss_wc_labels(model_data, clinical_data, metadata, ["correct_diagnosis", "F20-F29", "F30-F39"])
-    joined_df = joined_df.copy().select_dtypes(include=np.number)
+    raw_model_pred_df = model_data.copy().set_index("Filename", drop=True)
+    joined_df = raw_model_pred_df.join(clinical_data)
+    joined_df_num = joined_df.copy().select_dtypes(include=np.number)
 
     for diagnosis in diagnoses:
         logging.info(f"RESULTS FOR DIAGNOSIS: {diagnosis}")
         logging.info("Fitting linear model and determining significant features")
-        lin_model, lin_model_summary, subset_df = fit_lin_model_int(target=diagnosis, joined_df=joined_df)
+        lin_model, lin_model_summary, subset_df = fit_lin_model_int(target=diagnosis, joined_df=joined_df_num)
         logging.info("Fitting interaction term model with significant features")
         int_model, interaction_names, X, y = fit_interaction_model(lin_model, subset_df, target=diagnosis)
         plot_sig_interactions(int_model, 

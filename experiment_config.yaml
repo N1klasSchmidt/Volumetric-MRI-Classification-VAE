@@ -94,6 +94,8 @@ analysis:
     # Should downstream analysis be performed
     downstream: False
     # Is there additional metadata associated with this testing data? 
+    # Regardless of train_test_split, pass this as a single df with rosw=samples, columns=vars
+    # Ensure a "Diagnosis_extra" column, where each diagnosis is mapped to one of the training outputs!
     extra_metadata_path: None
     correlation_analysis: True
     SHAP_analysis: True
