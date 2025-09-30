@@ -36,7 +36,6 @@ from utils.logging_utils import setup_prediction_logging, log_prediction_metrics
 from aggr_VAE_training import train_model
 from aggr_VAE_loading import load_data_for_model
 from aggr_VAE_prediction import SinglePredictor
-from aggr_VAE_no_XCov_prediction import SinglePredictor_no_XCov
 from models.aggr_VAE import NewVAE
 from models.aggr_VAE_no_XCov import NewVAE_no_XCov
 
@@ -47,7 +46,6 @@ from utils.downstream_utils import (
     NewVAE_no_XCov_Wrapper_latent,
     run_shap_analysis,
     get_all_correlations,
-    rename_nss_wc,
     run_interaction_term_analysis,
     predict_unseen_risk_from_latent,
     predict_clinical_from_latent,
@@ -71,10 +69,10 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
     atlas_map = get_atlas_map(experiment_config["data"]["input_atlases"])
     metadata = pd.read_csv(experiment_config["data"]["metadata_path"], header=[0])
     
-    for data_col in ["Filename", "Sex", "Sex_int", "Dataset", "Diagnosis"]:
+    for data_col in ["Filename", "Sex", "Sex_int", "Dataset", "Diagnosis", "Age"]:
         assert data_col in metadata.columns.to_list(), f"{data_col} not found in metadata. Abborting run."
     
-    metadata = metadata[["Filename", "Sex", "Sex_int", "Dataset", "Diagnosis"]]
+    metadata = metadata[["Filename", "Sex", "Sex_int", "Dataset", "Diagnosis", "Age"]]
 
     for covar in experiment_config["model"]["covariate_names"]:
         assert covar in metadata.columns.to_list(), f"Covariate '{covar}' not found. Please use covariates for which there is a column in the provided metadata!"
@@ -90,7 +88,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
 
     vol_to_use = None
 
-    if experiment_config["experiment"]["train"] == False: 
+    if experiment_config["experiment"]["train_model"] == False: 
         assert experiment_config["experiment"]["base_experiment_to_load"] is not None, "If training is set to false, specify an experiment to emulate."
         
         if experiment_config["experiment"]["base_experiment_to_load"].endswith(".pth"): 
@@ -146,7 +144,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
             DIAGNOSES=experiment_config["data"]["diagnoses"],   ################################################ THIS MIGHT BE A PROBLEM! INCLUDES ALL! 
             COVARS=experiment_config["model"]["covariate_names"],
             # Misc.
-            LATENT_DIM=latent_dim,
+            LATENT_DIM=10, ##################################################### PLACEHOLDER, REMOVE
             SHUFFLE_DATA=False,
             FINE_TUNING=False,
             CE_CLASS_WEIGHTS=None,
@@ -169,7 +167,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
 
     logging.info(log_title("TRAIN-TEST SPLITTING" ))
     metadata_dict = determine_split(experiment_config["data"]["train_test_split"], metadata)
-    resplit_data(df_dict=metadata_dict, output_dir=config.OUTPUT_DIR)
+    resplit_data(df_dict=metadata_dict, output_dir=config.OUTPUT_DIR, data_type=experiment_config["data"]["data_format"])
 
     config.TRAIN_DATA_PATH = f"/workspace/data/raw_data_train_valid"
 
@@ -179,8 +177,11 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
     section_title = "OVER- / UNDERSAMPLING" 
     logging.info(log_title(section_title))
 
+    resample_method = experiment_config["data"]["resampling_method"]
+
+    print(experiment_config["data"]["resampling_method"])
     if experiment_config["data"]["resampling"] == "over":
-        logging.info(f"Performing oversampling of data with method: {experiment_config["data"]["resampling_method"]}")
+        logging.info(f"Performing oversampling of data with method: {resample_method}")
         train_df_sampled, rois, scalers = oversample(files_to_oversample=train_annotations_split,
                                     files_not_to_oversample=valid_annotations_split,
                                     method=experiment_config["data"]["resampling_method"],
@@ -191,7 +192,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
 
     # Undersampling of the majority class labels (HC and SCHZ)
     elif experiment_config["data"]["resampling"] == "under":
-        logging.info(f"Performing undersampling of data with method: {experiment_config["data"]["resampling_method"]}") 
+        logging.info(f"Performing undersampling of data with method: {resample_method}") 
         train_df_sampled, rois, scalers = undersample(files_not_to_undersample=valid_annotations_split,
                                     files_to_undersample=train_annotations_split,
                                     method=experiment_config["data"]["resampling_method"],
@@ -202,7 +203,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
 
     # Undersampling of the majority class label (HC) and oversampling of the minority class label (MDD) to target label (SCHZ)
     elif experiment_config["data"]["resampling"] == "hybrid":
-        logging.info(f"Performing hybrid sampling of data with method: {experiment_config["data"]["resampling_method"]}")
+        logging.info(f"Performing hybrid sampling of data with method: {resample_method}")
         train_df_sampled, rois, scalers = hybrid_sample(files_not_to_resample=valid_annotations_split,
                                         files_to_resample=train_annotations_split,
                                         class_props= {"majority": "HC", "target": "SCHZ", "minority": "MDD"},
@@ -305,12 +306,14 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
         trained_model = load_checkpoint_model(model=model_architecture, model_filename=trained_model_path)
 
     # ------------------------------ STEP 6: Perform the testing with the trained model ------------------------------
+    test_dirs = [item for item in metadata_dict.keys() if item.startswith("test")]
+    assert sorted(experiment_config["analysis"].keys()) == sorted(test_dirs), "Ensure that the testing runs under 'experiment' correspond with the setup data split"
 
-    assert sorted(experiment_config["analysis"].keys()) == sorted(metadata_dict.keys()), "Ensure that the testing runs under 'experiment' correspond with the setup data split"
+    for testing_run, testing_data in metadata_dict.items():
+        if not testing_run.startswith("test"):
+            continue 
 
-    for testing_run, testing_data in metadata_dict: 
-
-        testing_run_diagnoses = testing_data["Diagnosis"].unique().to_list()
+        testing_run_diagnoses = testing_data["Diagnosis"].unique().tolist()
         testing_run_experimental_details = experiment_config["analysis"][testing_run]
 
         model_config = copy.deepcopy(config)
@@ -337,7 +340,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
         logging.info(log_title(f"TESTING RUN {testing_run}"))
 
         label_mapping = {}
-        for idx, diagnosis in sorted(model_config.DIAGNOSES): 
+        for idx, diagnosis in enumerate(sorted(model_config.DIAGNOSES)): 
             label_mapping[idx] = diagnosis
 
         # if experiment_config["model"]["xcov"]:
@@ -345,7 +348,6 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
                                     model_config=model_config,
                                     model=trained_model, 
                                     run_id=testing_run, 
-                                    latent_dim=latent_dim,
                                     device=config.DEVICE,
                                     label_mapping=label_mapping,
                                     original_diagnoses=config.DIAGNOSES,
@@ -365,7 +367,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
             all_data_paths_filtered[atlas] = os.path.join(experiment_config["data"]["data_dir"], f"raw_data_{testing_run}", f"{atlas}_data.csv")
 
         logging.info("Step: Initialize internal testing data")
-        predictor.init_test_data(csv_paths=metadata_dict["test"],
+        predictor.init_test_data(csv_paths=metadata_dict[testing_run],
                                     data_paths=all_data_paths_filtered,
                                     scalers=scalers)
         logging.info("Step: Computing performance")

@@ -32,8 +32,6 @@ class SinglePredictor():
             device: torch.device,
             # Name of the atlas that was originally used to train the model
             run_id: str,
-            # Dimension of the latent space encoding
-            latent_dim: int,
             # Output for logging
             logging_config: Dict,
             # Is the XCov or Base model being used? 
@@ -58,7 +56,6 @@ class SinglePredictor():
         self.dataloader = None
         self.run_id = run_id
         self.test_annotations = None
-        self.latent_dim = latent_dim
         self.logging_config = logging_config
         self.model_config = model_config
         self.metadata_pred = None

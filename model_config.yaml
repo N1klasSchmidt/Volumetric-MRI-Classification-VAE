@@ -7,7 +7,7 @@ model_parameters:
   # General parameters
   learning_rate: 0.002
   weight_decay: 0.0006699
-  epochs: 250
+  epochs: 10
   batch_size: 128 
   dropout_probability: 0.2
   hidden_dimension_size: 100

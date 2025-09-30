@@ -1,3 +1,5 @@
+import sys
+sys.path.append("/workspace/src")
 import yaml
 from RUN_aggr_VAE import run_VAE_experiment
 
@@ -9,8 +11,11 @@ from RUN_aggr_VAE import run_VAE_experiment
 # - Is the input data either csv or h5? 
 # - Should a model be trained or simply a model loaded? Loaded from which other experiment? 
 
-experiment_config = yaml.safe_load("experiment_config.yaml")
-model_config = yaml.safe_load("model_config.yaml")
+with open("/workspace/experiment_config.yaml", 'r') as file:
+    experiment_config = yaml.safe_load(file)
+
+with open("/workspace/model_config.yaml", 'r') as file:
+    model_config = yaml.safe_load(file)
 
 run_VAE_experiment(experiment_config, model_config)
 

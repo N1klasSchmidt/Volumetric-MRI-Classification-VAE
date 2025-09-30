@@ -125,8 +125,8 @@ def train_model(config, train_loader, valid_loader, annotations, atlas_lengths, 
             annotations=annotations,
             model_metrics=model_metrics,
             config=config,
-            no_plotting=False,
-            no_val_plotting=False,
+            no_plotting=True,
+            no_val_plotting=True,
             no_saving=True
         )
 

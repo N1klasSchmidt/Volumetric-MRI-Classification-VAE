@@ -5,13 +5,13 @@
 experiment:
   # A unique name for this run (used for output directory creation). 
   # If left empty a name is automatically generated.
-  run_name: None
+  run_name: null
   # Set to True to train a new model; False to load a pre-trained one.
-  train_model: True
+  train_model: false
   # If train_model is False, specify the experiment path to load weights from.
-  base_experiment_to_load: None
+  base_experiment_to_load: "/workspace/experiments/2025-09-29_16-16_experiment_CLNS"
   # Base directory where all results (logs, models, metrics) will be saved
-  output_root_dir: "./experiments"
+  output_root_dir: "/workspace/experiments"
 
 
 # ===================================================================
@@ -21,12 +21,12 @@ experiment:
 
 data:
   # Path to the main data directory. Per atlas one file with ALL samples!
-  data_dir: "./data/"
+  data_dir: "/workspace/data/"
   # Format of the raw input data. Options: h5, csv
   # Every data file must have ROI^measurementtype as row indices, and samples as column names.
   data_format: "csv"
   # Path to the supplementary metadata file. This should contain ALL samples.
-  metadata_path: "./data/full_metadata.csv"
+  metadata_path: "/workspace/data/full_metadata.csv"
   # List of atlases. Ensure that the data of each atlas segmentation is saved to a separate file.
   # The system will automatically determine the best abbreviation.
   input_atlases:
@@ -36,7 +36,7 @@ data:
     - cobra
   # Which diagnoses are present in your data? Specify the colors.
   diagnoses: ["HC", "MDD", "SCHZ", "CTT"]
-  diagnosis_colors: ["orange", "blue", "red", "navy"]
+  diagnosis_colors: ["darkorange", "blue", "red", "navy"]
 
   # --- Resampling of data  --- 
   # What resampling method should be used on the data? Choice between "hybrid", "over", "under" and None
@@ -74,10 +74,7 @@ data:
 
 model:
   # Whould the model with (True) or without (False) be used? 
-  xcov: True # Options: True, False
-  # Path pointing to model-specific parameters. Can be adjusted in src/utils/param_utils.py
-  params: "/workspace/run_parameters.csv"
-
+  xcov: true # Options: True, False
   # --- Specific to Xcov model type ---
   # If the model type is 'Xcov', this specifies the covariate to use (must exist in metadata!)
   covariate_names: ["Dataset"]
@@ -92,20 +89,20 @@ analysis:
   # Which testing should be performed
   test_1: 
     # Should downstream analysis be performed
-    downstream: False
+    downstream: false
     # Is there additional metadata associated with this testing data? 
     # Regardless of train_test_split, pass this as a single df with rosw=samples, columns=vars
     # Ensure a "Diagnosis_extra" column, where each diagnosis is mapped to one of the training outputs!
     extra_metadata_path: None
-    correlation_analysis: True
-    SHAP_analysis: True
-    latent_feature_analysis: True
+    correlation_analysis: false
+    SHAP_analysis: false
+    latent_feature_analysis: false
 
   test_2: 
-    downstream: True
-    extra_metadata_path: ""
-    correlation_analysis: True
-    SHAP_analysis: True
-    latent_feature_analysis: True
+    downstream: true
+    extra_metadata_path: "/workspace/data/extended_metadata.csv"
+    correlation_analysis: true
+    SHAP_analysis: true
+    latent_feature_analysis: true
 
-  joint_umap: True
+#joint_umap: True

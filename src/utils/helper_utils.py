@@ -58,10 +58,10 @@ def get_atlas_map(atlases: List) -> Dict:
     for atlas in sorted(atlases): 
         caps = atlas.title()
 
-        if f"[{caps[0]}]" in atlas_map.keys():
-            atlas_map[f"[{caps[:1]}]"] = atlas
+        if f"[{caps[0]}]" in atlas_map.values():
+            atlas_map[atlas] = f"[{caps[:1]}]"
         else: 
-            atlas_map[f"[{caps[0]}]"] = atlas
+            atlas_map[atlas] = f"[{caps[0]}]"
     return atlas_map
 
 # Normalization and scaling of input data. Scaling is performed on a per datatype basis. There are two options for scaling
@@ -712,6 +712,7 @@ def load_all_data(atlas_map: Dict,
                   save_dir: str,
                   train_scalers_atlases: Dict = None,
                   batch_corr_ext: str = "",
+                  data_type: str = "csv"
                   ):
     
     joined_df = None
@@ -720,7 +721,7 @@ def load_all_data(atlas_map: Dict,
 
     for atlas, atlas_abbrev in atlas_map.items():
         
-        path = f"{save_dir}/{atlas}_data{batch_corr_ext}.csv"
+        path = f"{save_dir}/{atlas}_data{batch_corr_ext}.{data_type}"
         atlas_data_df = pd.read_csv(path, header=0, index_col=0)
 
         filter_files = metadata_df["Filename"].to_list()
@@ -769,18 +770,19 @@ def oversample(files_to_oversample: pd.DataFrame,
                             "neuromorphometrics": "[N]",
                             "suit": "[S]",
                             },
+                data_type: str = "csv",
                ) -> pd.DataFrame:
     
     # Step 1: Create a merged dataframe of the stacked volume measurements across all atlases. Normalize and Scale
     logging.info("Step: Scaling and merging all data")
     
     files_to_oversample = files_to_oversample[["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]]
-    joined_df, scalers = load_all_data(atlas_map, files_to_oversample, save_dir, batch_corr_ext=batch_corr_ext)  # scalers is a dictionary with the structure: {atlas: {measurment_type:StandardScaler}}
+    joined_df, scalers = load_all_data(atlas_map, files_to_oversample, save_dir, batch_corr_ext=batch_corr_ext, data_type=data_type)  # scalers is a dictionary with the structure: {atlas: {measurment_type:StandardScaler}}
     rois = joined_df.index.to_list()
 
     if files_not_to_oversample is not None:
         files_not_to_oversample = files_not_to_oversample[["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]]
-        joined_df_rest, _ = load_all_data(atlas_map, files_not_to_oversample, save_dir, train_scalers_atlases=scalers, batch_corr_ext=batch_corr_ext)
+        joined_df_rest, _ = load_all_data(atlas_map, files_not_to_oversample, save_dir, train_scalers_atlases=scalers, batch_corr_ext=batch_corr_ext, data_type=data_type)
         original_rest_data = pd.merge(joined_df_rest.T, files_not_to_oversample, on="Filename", how="left")
         original_rest_data = original_rest_data.drop(columns=["Age", "Sex", "Sex_int"]).set_index("Filename")
 
@@ -903,18 +905,19 @@ def undersample(files_to_undersample: pd.DataFrame,
                             "neuromorphometrics": "[N]",
                             "suit": "[S]",
                             },
+                data_type: str = "csv",
                ) -> pd.DataFrame:
     
     # Step 1: Create a merged dataframe of the stacked volume measurements across all atlases. Normalize and Scale
     logging.info("Step: Merging and scaling all data")
     
     files_to_undersample = files_to_undersample[["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]]
-    joined_df, scalers = load_all_data(atlas_map, files_to_undersample, save_dir, batch_corr_ext=batch_corr_ext)
+    joined_df, scalers = load_all_data(atlas_map, files_to_undersample, save_dir, batch_corr_ext=batch_corr_ext, data_type=data_type)
     rois = joined_df.index.to_list()
 
     if files_not_to_undersample is not None:
         files_not_to_undersample = files_not_to_undersample[["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]]
-        joined_df_rest, _ = load_all_data(atlas_map, files_not_to_undersample, save_dir, train_scalers_atlases=scalers, batch_corr_ext=batch_corr_ext)
+        joined_df_rest, _ = load_all_data(atlas_map, files_not_to_undersample, save_dir, train_scalers_atlases=scalers, batch_corr_ext=batch_corr_ext, data_type=data_type)
         original_rest_data = pd.merge(joined_df_rest.T, files_not_to_undersample, on="Filename", how="left")
         original_rest_data = original_rest_data.drop(columns=["Age", "Sex", "Sex_int"]).set_index("Filename")
 
@@ -1000,13 +1003,16 @@ def hybrid_sample(files_to_resample: pd.DataFrame,
                             "neuromorphometrics": "[N]",
                             "suit": "[S]",
                             },
+                data_type: str = "csv",
                ) -> pd.DataFrame:
     
     # Step 1: Create a merged dataframe of the stacked volume measurements across all atlases. Normalize and Scale
     logging.info("Step: Merging and scaling all data (unless batch corrected)")
 
+    print(files_to_resample)
+
     files_to_resample = files_to_resample[["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]]
-    joined_df, scalers = load_all_data(atlas_map, files_to_resample, save_dir, batch_corr_ext=batch_corr_ext)
+    joined_df, scalers = load_all_data(atlas_map, files_to_resample, save_dir, batch_corr_ext=batch_corr_ext, data_type=data_type)
     rois = joined_df.index.to_list()
 
     joined_df_t = joined_df.T
@@ -1016,7 +1022,7 @@ def hybrid_sample(files_to_resample: pd.DataFrame,
     non_resampled_data = None
     if files_not_to_resample is not None:
         files_not_to_resample = files_not_to_resample[["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]]
-        joined_df_rest, _ = load_all_data(atlas_map, files_not_to_resample, save_dir, train_scalers_atlases=scalers, batch_corr_ext=batch_corr_ext)
+        joined_df_rest, _ = load_all_data(atlas_map, files_not_to_resample, save_dir, train_scalers_atlases=scalers, batch_corr_ext=batch_corr_ext, data_type=data_type)
         
         joined_df_rest_t = joined_df_rest.T
         joined_df_rest_t.index.name = "Filename"
