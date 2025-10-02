@@ -520,15 +520,7 @@ def predict_unseen_risk_from_latent(
     logging.info("Evaluating the performance of Random Forest model")
     predict_unseen_risk_from_latent_rf(clinical_data=sorted_clinical, latent_data=sorted_latent, save_path=save_path, target=target, color_map=colors)
 
-    testing_subset_clinical = testing_subset_clinical.dropna()
-
-    # We compute the Variance Inflation Factor and filter out highly colinear variables before training our model!
-    vif_results = calculate_vif(testing_subset_clinical, f'{target}_risk')
-    features = vif_results.query(f"VIF < 10 | feature == '{target}_risk'")["feature"].to_list() + [f"{target}_risk"]
-    testing_subset_nss_wc_vif = testing_subset_clinical[features]
-    results, summary = fit_lin_model(f"{target}_risk", testing_subset_nss_wc_vif)# [["gaf_score", "ctt_risk"]])
-
-    return results, unseen_risk_important_features, results_coeff
+    return unseen_risk_important_features, results_coeff
 
 
 # Evaluate the performance of the logistic regression model used to predict the CTT label from latent features.
@@ -582,7 +574,7 @@ def compute_logreg_performance(probabilities, X_test, y_test, sorted_clinical, s
 
     plt.ylim(0.0, 100.0)
     ax.yaxis.set_major_formatter(mtick.PercentFormatter())
-    plt.title(f"{target}-risk prediction stratified by CTT diagnosis (Mann-Whitney U)", pad=30)
+    plt.title(f"{target}-risk prediction stratified by diagnosis (Mann-Whitney U)", pad=30)
     plt.tight_layout()
     plt.savefig(f"{save_path}/{target}_risk_comparison.png")
     plt.savefig(f"{save_path}/{target}_risk_comparison.svg")
@@ -603,7 +595,7 @@ def predict_unseen_risk_from_latent_rf(
     color_map: Dict, 
     ):
     
-    current_diagnoses = clinical_data["Diagnosis"].unique().to_list()
+    current_diagnoses = clinical_data["Diagnosis"].unique().tolist()
 
     total_data = pd.concat([latent_data, clinical_data["Diagnosis"]], axis=1)
 
@@ -668,33 +660,20 @@ def predict_clinical_from_latent(
     # Path to which the data should be saved
     save_path: str, 
     # k-Fold validation 
-    k: int = 5,
+    k: int = 4,
     # Type of regression that should be used to determine relevant clinical features ("lasso" or "ridge")
     method: str = "lasso",
     ) -> pd.DataFrame:
 
     logging.info("Predicting clinical variables from latent feature vectors (CV Ridge Regression)")
     
-    def get_intersection(sets):
-        all_intersection = None
-        for set in sets: 
-            if all_intersection is None:
-                all_intersection = set
-            else:
-                all_intersection = all_intersection.intersection(set)
-        return all_intersection
-    
     results = {}
     resuls_selected_features = {}
     results_coeff = {}
 
-
-    sorted_clinical = clinical.sort_index().drop(columns=['Dataset', 'Diagnosis', 'Sex', 'catatonia_icd11_v1'])
+    sorted_clinical = clinical.sort_index().drop(columns=['Dataset', 'Diagnosis', 'Sex',])
     sorted_clinical_num = sorted_clinical.select_dtypes(include=np.number)
     sorted_latent = latent.sort_index()
-
-    # new_column_names = [f"Feature_{i}" for i in sorted_latent.columns.to_list()]
-    # sorted_latent.columns = new_column_names
 
     for idx, target in enumerate(sorted_clinical_num.columns.to_list()):
         logging.info(f"Step: [{idx+1}/{len(sorted_clinical_num.columns.to_list())}] Ridge Regression on {target} clinical variable")
@@ -703,12 +682,13 @@ def predict_clinical_from_latent(
         y_tests = []
         selected_features = []
 
-        for i, (train_indices, test_indices) in enumerate(kf.split(latent)):
-            X_train = sorted_latent.iloc[train_indices]
-            y_train = sorted_clinical_num.iloc[train_indices][target]
+        for i, (train_indices, test_indices) in enumerate(kf.split(sorted_latent)):
 
-            X_test = sorted_latent.iloc[test_indices]
-            y_test = sorted_clinical_num.iloc[test_indices][target]
+            X_train = sorted_latent.iloc[train_indices, :]
+            y_train = sorted_clinical_num.iloc[train_indices, :][target]
+
+            X_test = sorted_latent.iloc[test_indices, :]
+            y_test = sorted_clinical_num.iloc[test_indices, :][target]
 
             # Drop rows with NaN values from both training and testing sets
             train_df = pd.concat([X_train, y_train], axis=1).dropna()
@@ -733,7 +713,6 @@ def predict_clinical_from_latent(
 
                 # Get features with non-zero coefficients
                 non_zero_mask = lasso.coef_ != 0
-                #selected_feature_names = X_train.columns[non_zero_mask].tolist()
                 selected_features.append(lasso.coef_)
 
             y_preds.extend(y_pred)
@@ -769,7 +748,6 @@ def predict_clinical_from_latent(
             df_intersect.sort_values(by="avg", ascending=False, inplace=True)
             intersecting_features = df_intersect.index.to_list()  # Intersecting features sorted by average value of coefficients
 
-            #intersecting_features = sorted(list(get_intersection(selected_features)))
             resuls_selected_features[target] = intersecting_features
             logging.info(f"Intersectiong latent features across all folds: {intersecting_features}")
 
@@ -1045,22 +1023,22 @@ def compute_correlations(
 
     # Compute correlations and p-values
     logging.info("Computing Spearman Correlation between model predictions and metadata features")
-    for meta_col in model_pred_df.columns: # Changed outer loop for consistency with inner
-        for wct_col in metadata_df.columns:
-            wct_data = metadata_df[wct_col].dropna()
-            meta_data = model_pred_df[meta_col].dropna()
+    for model_col in model_pred_df.columns: # Changed outer loop for consistency with inner
+        for meta_col in metadata_df.columns:
+            meta_data = metadata_df[meta_col].dropna()
+            model_data = model_pred_df[model_col].dropna()
             
-            common_idx = wct_data.index.intersection(meta_data.index)
+            common_idx = meta_data.index.intersection(model_data.index)
             
             if len(common_idx) > 2:  # Need at least 3 points for meaningful p-value
-                wct_common = wct_data.loc[common_idx]
                 meta_common = meta_data.loc[common_idx]
+                model_common = model_data.loc[common_idx]
                 
                 # Compute Spearman correlation and p-value
-                corr_val, p_val = spearmanr(wct_common, meta_common)
+                corr_val, p_val = spearmanr(meta_common, model_common)
                 
-                correlation_results.loc[meta_col, wct_col] = corr_val
-                pvalue_results.loc[meta_col, wct_col] = p_val
+                correlation_results.loc[model_col, meta_col] = corr_val
+                pvalue_results.loc[model_col, meta_col] = p_val
 
     # --- Apply Multiple Testing Correction (Benjamini-Hochberg FDR) ---
     # Flatten the p-values, remove NaNs for correction, and get original shape
@@ -1147,20 +1125,9 @@ def compute_correlations(
     })
 
     # Plot filtered heatmap with significance annotations
-    #cmap_high_contrast = 'vlag'
     colors1 = ['navy', 'white', 'firebrick']
     cust_cmap = LinearSegmentedColormap.from_list("custom_palette", colors1)
-    # colors3 = ['blue', 'white', 'red']
-    # custom_cmap3 = LinearSegmentedColormap.from_list("custom_palette", colors3)
-    # custom_cmap2 = sns.diverging_palette(250, 15, center = "dark", as_cmap=True)
-    # spectral = sns.color_palette("Spectral", as_cmap=True)
-    # coolwarm = sns.color_palette("coolwarm", as_cmap=True)
-    # icefire = sns.color_palette("icefire", as_cmap=True)
 
-    # maps = [custom_cmap1, custom_cmap2, custom_cmap3, spectral, coolwarm, icefire]
-    # names = ["custom1", "custom2", "custom3", "spect", "cw", "if"]
-
-    #for cust_cmap, name in zip(maps, names):
     plt.figure(figsize=(max(10, len(correlation_filtered.columns) * 0.8), 
                         max(6, len(correlation_filtered.index) * 0.5)))
 
@@ -1258,25 +1225,6 @@ def compute_correlations(
         no_sig_df.to_csv(os.path.join(save_path, f'significant_correlations_{diagnosis}_{datasets}.csv'), index=False)
 
 
-# Function to correct the diagnostic labels of the NSS and whiteCAT data. These are incorrect in the single-dataset 
-# metadata, but correct in the metadata of all patients (including non-NSS and non-whiteCAT datasets) 
-def correct_nss_wc_labels(model_data: pd.DataFrame, clinical_data: pd.DataFrame, metadata: pd.DataFrame, drop_cols: List[str]) -> pd.DataFrame:
-    logging.info("Correcting incorrect NSS and whiteCAT labels")
-
-    raw_model_pred_df = model_data.copy().set_index("Filename", drop=True)
-    # raw_model_pred_df.drop(columns="Unnamed: 0", inplace=True)
-    joined_df = raw_model_pred_df.join(clinical_data)
-
-    # The diagnosis labels are incorrect in the NSS and whiteCAT dataframes. We correct them from the total metadata.
-    diagnosis_map = metadata[["Filename", "Diagnosis"]].copy()
-    diagnosis_map.rename(columns={"Diagnosis": "correct_diagnosis"}, inplace=True)
-    joined_df = joined_df.merge(diagnosis_map, on="Filename", how="left")
-    joined_df["Diagnosis"] = joined_df["correct_diagnosis"].fillna(joined_df["Diagnosis"])
-    joined_df.drop(columns=drop_cols, inplace=True)
-    
-    return joined_df
-
-
 # Main function to compute the correlations of the desired data subsets. Currently only set up to do a CTT specific run and an all-diagnosis run. 
 def get_all_correlations(
         # Clinical metadata e.g. from NSS and whiteCAT
@@ -1287,10 +1235,10 @@ def get_all_correlations(
         metadata: pd.DataFrame,
         # Save path for outputted correlation data
         save_path: str,
-        diagnoses: List, 
+        diagnoses: List,
+        original_model_diagnoses: List, 
         datasets="no_dataset_subset"
         ):
-
 
     raw_model_pred_df = model_data.copy().set_index("Filename", drop=True)
     joined_df = raw_model_pred_df.join(clinical_data).drop(columns=["Confidence", "Pred_labels"])
@@ -1301,8 +1249,8 @@ def get_all_correlations(
             joined_df_diagnosis_subset = joined_df[joined_df["Diagnosis"] == unseen_diagnosis]
             num_joined_df_diagnosis_subset = joined_df_diagnosis_subset.select_dtypes(include=np.number)
 
-            numeric_model = num_joined_df_diagnosis_subset[["HC", "MDD", "SCHZ", "Misdiagnosis", "Uncertainty"]]
-            metadata_cols = ~num_joined_df_diagnosis_subset.columns.isin(["HC", "MDD", "SCHZ", "Misdiagnosis", "Uncertainty"])
+            numeric_model = num_joined_df_diagnosis_subset[original_model_diagnoses+["Misdiagnosis", "Uncertainty"]]
+            metadata_cols = ~num_joined_df_diagnosis_subset.columns.isin(original_model_diagnoses+["Misdiagnosis", "Uncertainty"])
             numeric_meta = num_joined_df_diagnosis_subset.iloc[:, metadata_cols]
 
             compute_correlations(model_pred_df=numeric_model, metadata_df=numeric_meta, save_path=save_path, diagnosis=unseen_diagnosis, datasets=datasets)
@@ -1310,383 +1258,12 @@ def get_all_correlations(
         logging.info("Computing correlations between model outputs and clinical variables across ALL diagnoses")
         num_joined_df_diagnosis_subset = joined_df.select_dtypes(include=np.number)
 
-        numeric_model = num_joined_df_diagnosis_subset[["HC", "MDD", "SCHZ", "Misdiagnosis", "Uncertainty"]]
-        metadata_cols = ~num_joined_df_diagnosis_subset.columns.isin(["HC", "MDD", "SCHZ", "Misdiagnosis", "Uncertainty"])
+        numeric_model = num_joined_df_diagnosis_subset[original_model_diagnoses+["Misdiagnosis", "Uncertainty"]]
+        metadata_cols = ~num_joined_df_diagnosis_subset.columns.isin(original_model_diagnoses+["Misdiagnosis", "Uncertainty"])
         numeric_meta = num_joined_df_diagnosis_subset.iloc[:, metadata_cols]
 
         compute_correlations(model_pred_df=numeric_model, metadata_df=numeric_meta, save_path=save_path, diagnosis="all", datasets=datasets)
     
-    return
-
-# The following three functions form a single unit, working one after the other. run_interaction_analysis() joins their functionality.
-# First fit a linear model to the data to determine which features are significant. Use these features to compute pairwise interactions.
-def fit_lin_model_int(
-        # Target class that should be analyzed
-        target: str, 
-        # Data frame containing the information of both the class predictions of the model and the corresponding metadata
-        joined_df: pd.DataFrame
-        ):
-
-    num_joined_df = joined_df.select_dtypes(include=np.number).copy()
-
-    numeric_model = num_joined_df[["HC", "MDD", "SCHZ", "Misdiagnosis", "Uncertainty", "Confidence", "Pred_labels"]]
-
-    model_features = numeric_model.columns.tolist()
-
-    # Select only the meta data features and drop all the model features save for the target feature specified above
-    model_feat_to_drop = [feature for feature in model_features if feature != target]
-    subset_num_joined = num_joined_df.drop(columns=model_feat_to_drop) # We want only the target feature and metadata columns
-
-    subset_num_joined.dropna(inplace=True)
-
-    X = subset_num_joined.drop(columns=[target])
-    y = subset_num_joined[target]
-
-    formula = f"{target} ~ 1"
-
-    for term in X.columns:
-        formula += f" + {term}"
-
-    data_all = pd.concat([X, y], axis = 1)
-
-    final_model = smf.ols(formula=formula, data=data_all).fit()
-
-    return final_model, final_model.summary(), subset_num_joined
-
-# Based on the features determined by the linear model, train a new linear model using pairwise interaction terms.
-def fit_interaction_model(
-        # Linear regression model trained in the previous step
-        lin_model, 
-        # Numerical data to be used for interaction model fitting
-        subset_num_joined: pd.DataFrame, 
-        # Target variable to be predicted
-        target: str, 
-        ):
-
-    lin_fit_pvalues = {}
-    for term, pval in lin_model.pvalues.items():
-        lin_fit_pvalues[term] = pval
-
-    # Sort by p-value (ascending) and get top 5
-    sorted_interactions = sorted(lin_fit_pvalues.items(), key=lambda item: item[1])
-    top_coeff = [term for term, pval in sorted_interactions[:5] if term != "Intercept"]
-
-    logging.info(f"Top coefficients for interaction model: {top_coeff}")
-
-    # Initialize dictionaries/lists to store the new features and their names
-    interaction_data = {}
-    interaction_names = [] 
-
-    all_feature_cols = [col for col in subset_num_joined.columns if col != target]
-    other_features = [col for col in all_feature_cols if col not in top_coeff]
-
-    for feature in top_coeff:
-        interaction_data[feature] = subset_num_joined[feature]
-
-    # Generate pairwise interactions between EACH top_coeff feature and EACH other_feature
-    for top_feature in top_coeff:
-        for other_feature in other_features:
-            interaction_name = f"{top_feature}:{other_feature}"
-            interaction_data[interaction_name] = subset_num_joined[top_feature] * subset_num_joined[other_feature]
-            interaction_names.append(interaction_name)
-
-    X = subset_num_joined.drop(columns=[target])
-    y = subset_num_joined[target]
-
-    formula = f"{target} ~ 1"
-
-    for term in top_coeff:
-        if term in X.columns:
-            formula += f" + {term}"
-
-    for interaction_term_name in interaction_names:
-        formula += f" + {interaction_term_name}"
-
-    data_all = pd.concat([X, y], axis=1)
-
-    final_model = smf.ols(formula=formula, data=data_all).fit()
-    #print(final_model.summary())
-    return final_model, interaction_names, X, y
-
-# We plot the significant interaction terms. For interactions with gender a barplot is used, otherwise a scatter plot.
-def plot_sig_interactions(
-        # Fit interaction term model used in previous step
-        int_model, 
-        # Names of the interaction terms. This determines what king of plot is made
-        interaction_names: List, 
-        # Significance level
-        alpha: float, 
-        # Path to save the generated plots and data
-        save_path: str, 
-        # Subset of numerical data
-        subset_num_joined: pd.DataFrame, 
-        # Target variable to be predicted
-        target: str, 
-        # Training data used for interaction term model fitting
-        X: pd.DataFrame, 
-        y: pd.DataFrame,
-        # Was the analysis run for a diagnostic subset ("SCHZ", "MDD", "CTT")
-        diag_label_subset: str,
-        ):
-
-    interaction_pvalues = {}
-    for term, pval in int_model.pvalues.items():
-        if ':' in term: # Check if it's an interaction term
-            if term in interaction_names:
-                interaction_pvalues[term] = pval
-
-    # Sort by p-value (ascending) and get top 5
-    sorted_interactions = sorted(interaction_pvalues.items(), key=lambda item: item[1])
-    top_5_interaction_terms_str = [term for term, pval in sorted_interactions[:5] if not "Intercept" in term]
-
-    # Convert strings to tuples and store their corresponding p-values
-    top_5_interaction_data = []
-    for term_str, pval in sorted_interactions[:5]:
-        if "Intercept" in term_str:
-            continue
-        var1, var2 = term_str.split(':')
-        top_5_interaction_data.append(((var1, var2), round(pval, 4), term_str)) # Store tuple, pval, and original term string
-
-    logging.info(f"Top 5 Interaction Terms (as tuples with p-value): {[(t[0], t[1]) for t in top_5_interaction_data]}")
-
-    # 2. Conditional Plotting for each of the top 5 interaction terms
-    for i, ((var1, var2), interaction_p_value, original_term_str) in enumerate(top_5_interaction_data):
-        logging.info(f"Plotting for Interaction {i+1}: {var1}:{var2}")
-
-        is_gender_interaction = False
-        gender_var = None
-        other_continuous_var = None
-
-        if var1 in ['Male', 'Female']:
-            is_gender_interaction = True
-            gender_var = var1
-            other_continuous_var = var2
-        elif var2 in ['Male', 'Female']:
-            is_gender_interaction = True
-            gender_var = var2
-            other_continuous_var = var1
-
-        if is_gender_interaction and gender_var not in subset_num_joined.columns:
-            print(f"Warning: Gender variable '{gender_var}' not found in DataFrame. Skipping plot.")
-            is_gender_interaction = False
-
-        if is_gender_interaction:
-            # Generate Box Plot for Gender Interaction with continuous variable split
-            #print(f"Generating Box Plot for {gender_var} interaction with {other_continuous_var}.")
-
-            if gender_var == 'Male':
-                label_for_gender_1_value = 'Male'
-                label_for_gender_0_value = 'Female'
-                gender_col_val_for_gender_1 = 1
-                gender_col_val_for_gender_0 = 0
-            elif gender_var == 'Female':
-                label_for_gender_1_value = 'Female'
-                label_for_gender_0_value = 'Male'
-                gender_col_val_for_gender_1 = 1
-                gender_col_val_for_gender_0 = 0
-            else:
-                print(f"Error: Unrecognized gender variable '{gender_var}'. Skipping box plot.")
-                continue
-
-            # Check if the continuous variable exists
-            if other_continuous_var not in subset_num_joined.columns:
-                logging.warning(f"Warning: Continuous variable '{other_continuous_var}' not found in DataFrame. Skipping gender box plot.")
-                continue
-
-            # Calculate the median of the continuous variable
-            int_median = subset_num_joined[other_continuous_var].median()
-
-            # Create data for four groups
-            data_group_0_low = subset_num_joined[(subset_num_joined[gender_var] == gender_col_val_for_gender_0) &
-                                                 (subset_num_joined[other_continuous_var] < int_median)][target].dropna()
-            data_group_0_high = subset_num_joined[(subset_num_joined[gender_var] == gender_col_val_for_gender_0) &
-                                                  (subset_num_joined[other_continuous_var] >= int_median)][target].dropna()
-            data_group_1_low = subset_num_joined[(subset_num_joined[gender_var] == gender_col_val_for_gender_1) &
-                                                 (subset_num_joined[other_continuous_var] < int_median)][target].dropna()
-            data_group_1_high = subset_num_joined[(subset_num_joined[gender_var] == gender_col_val_for_gender_1) &
-                                                  (subset_num_joined[other_continuous_var] >= int_median)][target].dropna()
-
-            plot_data_list = [data_group_0_low, data_group_0_high, data_group_1_low, data_group_1_high]
-            box_labels = [
-                f'{label_for_gender_0_value} \n (Low {other_continuous_var})',
-                f'{label_for_gender_0_value} \n (High {other_continuous_var})',
-                f'{label_for_gender_1_value} \n (Low {other_continuous_var})',
-                f'{label_for_gender_1_value} \n (High {other_continuous_var})'
-            ]
-
-            if all(len(g) > 1 for g in plot_data_list): # Each group needs at least 2 observations for ANOVA
-                f_stat, p_anova = f_oneway(*plot_data_list)
-
-            if p_anova > 0.10: 
-                logging.info(f"Skipping {gender_var}:{other_continuous_var} plot, as ANOVA interaction non-significant (p={p_anova:.3f})")
-                continue
-
-            if not np.isnan(interaction_p_value) and interaction_p_value <= alpha:
-                plt.figure(figsize=(10, 7))
-
-                plt.boxplot(plot_data_list, labels=box_labels, patch_artist=True, medianprops={'color': 'black'})
-
-                plt.tick_params(axis='x', labelsize=16) # For x-axis tick labels
-                plt.tick_params(axis='y', labelsize=16) # For y-axis tick labels
-
-                ax = plt.gca()
-                ax.set_xticklabels(box_labels, rotation=45, ha='right', fontsize=16) 
-
-                colors = ['#ADD8E6', '#87CEFA', '#F08080', '#FA8072'] # Fill colors
-                darker_colors = []
-                darken_factor = 0.7
-
-                for color_hex in colors:
-                    rgb = to_rgb(color_hex)
-                    darker_rgb = tuple(c * darken_factor for c in rgb)
-                    darker_colors.append(to_hex(darker_rgb))
-
-                for patch, face_color, edge_color in zip(plt.gca().patches, colors, darker_colors):
-                    patch.set_facecolor(face_color)
-                    patch.set_edgecolor(edge_color)
-                    patch.set_linewidth(1.5)
-
-
-                plot_title = (f'Distribution of {target} by {gender_var} and {other_continuous_var} Median\n'
-                              f'Model Interaction p = {interaction_p_value:.3f}')
-                if not np.isnan(p_anova):
-                    plot_title += f', ANOVA (4 groups) p = {p_anova:.3f}'
-                else:
-                    plot_title += f', ANOVA (4 groups) p = Not enough data'
-
-                plt.title(plot_title, fontsize=18)
-                #plt.xlabel(f'{gender_var} and {other_continuous_var} Groups', fontsize=15)
-                plt.ylabel(f'{target}', fontsize=18)
-                plt.grid(axis='y', linestyle=':', alpha=0.7)
-                plt.tight_layout()
-                plt.savefig(os.path.join(save_path, f'{diag_label_subset}_interaction_boxplot_{gender_var}_{other_continuous_var}_target-{target}.png'), dpi=300, bbox_inches='tight')
-                plt.savefig(os.path.join(save_path, f'{diag_label_subset}_interaction_boxplot_{gender_var}_{other_continuous_var}_target-{target}.svg'), dpi=300, bbox_inches='tight')
-
-                plt.close()
-            else:
-                print(f"Skipping {gender_var}:{other_continuous_var} plot, as interaction non-significant (p={interaction_p_value:.3f})")
-
-        else:
-            # Scatter Plot for non-gender interactions (original code)
-            logging.info(f"Generating Scatter Plot for {var1} and {var2}.")
-
-            if var1 not in subset_num_joined.columns or var2 not in subset_num_joined.columns:
-                logging.warning(f"Warning: One or both variables ({var1}, {var2}) for scatter plot not found in DataFrame. Skipping plot.")
-                continue
-
-            x_plot = subset_num_joined[var1]
-            interaction_feature_plot = subset_num_joined[var2]
-
-            int_median_plot = interaction_feature_plot.median()
-
-            group_low_mask_plot = (interaction_feature_plot < int_median_plot)
-            group_high_mask_plot = (interaction_feature_plot >= int_median_plot)
-
-            x_low_plot, y_low_plot = x_plot[group_low_mask_plot], y[group_low_mask_plot]
-            x_high_plot, y_high_plot = x_plot[group_high_mask_plot], y[group_high_mask_plot]
-
-            if len(x_low_plot) >= 2 and len(y_low_plot) >= 2:
-                slope_low_plot, intercept_low_plot, r_value_low_plot, p_value_low_plot, std_err_low_plot = linregress(x_low_plot, y_low_plot)
-            else:
-                slope_low_plot, intercept_low_plot, r_value_low_plot, p_value_low_plot, std_err_low_plot = np.nan, np.nan, np.nan, np.nan, np.nan
-
-            if len(x_high_plot) >= 2 and len(y_high_plot) >= 2:
-                slope_high_plot, intercept_high_plot, r_value_high_plot, p_value_high_plot, std_err_high_plot = linregress(x_high_plot, y_high_plot)
-            else:
-                slope_high_plot, intercept_high_plot, r_value_high_plot, p_value_high_plot, std_err_high_plot = np.nan, np.nan, np.nan, np.nan, np.nan
-
-            x_line_plot = np.linspace(x_plot.min(), x_plot.max(), 100)
-            y_line_low_plot = slope_low_plot * x_line_plot + intercept_low_plot
-            y_line_high_plot = slope_high_plot * x_line_plot + intercept_high_plot
-
-            n_low_plot = len(x_low_plot)
-            n_high_plot = len(x_high_plot)
-
-            if not np.isnan(std_err_low_plot) and not np.isnan(std_err_high_plot) and n_low_plot >= 2 and n_high_plot >= 2:
-                se_diff_slopes_plot = np.sqrt(std_err_low_plot**2 + std_err_high_plot**2)
-                epsilon = 1e-10
-                t_statistic_slopes_plot = (slope_high_plot - slope_low_plot) / (se_diff_slopes_plot + epsilon)
-                df_diff_slopes_plot = n_low_plot + n_high_plot - 4
-                if df_diff_slopes_plot < 1:
-                    p_value_slopes_plot = np.nan
-                    t_statistic_slopes_plot = np.nan
-                else:
-                    p_value_slopes_plot = 2 * t.sf(np.abs(t_statistic_slopes_plot), df_diff_slopes_plot)
-            else:
-                t_statistic_slopes_plot, p_value_slopes_plot, df_diff_slopes_plot = np.nan, np.nan, np.nan
-
-            if p_value_slopes_plot <= alpha:
-
-                plt.figure(figsize=(15, 6))
-
-                plt.scatter(x_low_plot, y_low_plot,
-                            s=20, alpha=0.9, color='skyblue', edgecolors='face',
-                            label=f'{interaction_feature_plot.name} < Median ({int_median_plot:.2f})')
-
-                plt.scatter(x_high_plot, y_high_plot,
-                            s=20, alpha=0.9, color='salmon', edgecolors='face',
-                            label=f'{interaction_feature_plot.name} >= Median ({int_median_plot:.2f})')
-
-                if not np.isnan(slope_low_plot):
-                    plt.plot(x_line_plot, y_line_low_plot,
-                            color='blue', linestyle='--', linewidth=2,
-                            label=f'Regression (Low) - Slope: {slope_low_plot:.2f}')
-                if not np.isnan(slope_high_plot):
-                    plt.plot(x_line_plot, y_line_high_plot,
-                            color='red', linestyle='--', linewidth=2,
-                            label=f'Regression (High) - Slope: {slope_high_plot:.2f}')
-
-                plot_title = (f'{x_plot.name} vs {target}, stratified by {interaction_feature_plot.name} Median\n'
-                              f'Slope Difference Significance: p = {p_value_slopes_plot:.3f}')
-                plt.title(plot_title, fontsize=18)
-                plt.xlabel(x_plot.name, fontsize=18)
-                plt.ylabel(target, fontsize=18)
-
-                plt.legend(title=f'Groups by {interaction_feature_plot.name}', bbox_to_anchor=(1.05, 1), loc='upper left')
-                plt.grid(True, linestyle=':', alpha=0.6)
-                plt.tight_layout(rect=[0, 0, 0.85, 1])
-                plt.savefig(os.path.join(save_path, f'{diag_label_subset}_interaction_regression_{var1}_{var2}_target-{target}.png'), dpi=300, bbox_inches='tight')
-                plt.savefig(os.path.join(save_path, f'{diag_label_subset}_interaction_regression_{var1}_{var2}_target-{target}.svg'), dpi=300, bbox_inches='tight')
-
-                plt.close()
-            else:
-                logging.info(f"Not plotting {var1} : {var2} interaction, as difference in slopes is non-significant")
-
-
-# This function runs the entire interaction term analysis
-def run_interaction_term_analysis(
-        # Model predictions
-        model_data: pd.DataFrame,
-        # Clinical metdadata 
-        clinical_data: pd.DataFrame,
-        # Complete basic metadata
-        metadata: pd.DataFrame,
-        # Path to save the data
-        save_path: str,
-        # Not to be confused with diag_label_subset! This sepcifies which model output is being targeted for prediction
-        diagnoses: List = ["SCHZ", "MDD", "HC"]
-        ):
-
-    raw_model_pred_df = model_data.copy().set_index("Filename", drop=True)
-    joined_df = raw_model_pred_df.join(clinical_data)
-    joined_df_num = joined_df.copy().select_dtypes(include=np.number)
-
-    for diagnosis in diagnoses:
-        logging.info(f"RESULTS FOR DIAGNOSIS: {diagnosis}")
-        logging.info("Fitting linear model and determining significant features")
-        lin_model, lin_model_summary, subset_df = fit_lin_model_int(target=diagnosis, joined_df=joined_df_num)
-        logging.info("Fitting interaction term model with significant features")
-        int_model, interaction_names, X, y = fit_interaction_model(lin_model, subset_df, target=diagnosis)
-        plot_sig_interactions(int_model, 
-                            interaction_names, 
-                            0.05, 
-                            save_path=save_path, 
-                            subset_num_joined=subset_df, 
-                            target=diagnosis, 
-                            y=y, 
-                            X=X,
-                            diag_label_subset="all" # specify if only a subset of the NSS and whiteCAT data is being regarded
-                            )
     return
 
 

@@ -872,22 +872,10 @@ def oversample(files_to_oversample: pd.DataFrame,
 
     for atlas, abbrev in atlas_map.items():
         atlas_df = intermediate_df[intermediate_df.index.str.startswith(abbrev)]
-        index_parts = np.array(atlas_df.index.str.split('_', n=2, expand=True).to_list())
-
-        original_multiindex = pd.MultiIndex.from_arrays([
-            index_parts[:,1],  # Original level 0 (e.g., region names)
-            index_parts[:,2]   # Original level 1 (e.g., Volume)
-        ], names=[None, 'Volume'])
-        
-        df_restored = atlas_df.copy()
-        df_restored.index = original_multiindex
-        df_original = df_restored.unstack('Volume')
-
-        df_original.sort_index(inplace=True)
-
+        atlas_df.sort_index(inplace=True)
         path = f"{save_dir}/Aggregated_{atlas}{batch_corr_ext}_os.csv"
         logging.info(f"Step: Saving oversampled {atlas} data to: {path}")
-        df_original.to_csv(path)
+        atlas_df.to_csv(path)
 
     return oversampled_metadata, rois, scalers
 
@@ -965,25 +953,12 @@ def undersample(files_to_undersample: pd.DataFrame,
 
     intermediate_df = total_data.drop(columns=["Sample_status", "Dataset", "Diagnosis"]).T
 
-    atlas_dfs = {}
-
     for atlas, abbrev in atlas_map.items():
         atlas_df = intermediate_df[intermediate_df.index.str.startswith(abbrev)]
-        index_parts = np.array(atlas_df.index.str.split('^', n=2, expand=True).to_list())
-
-        original_multiindex = pd.MultiIndex.from_arrays([
-            index_parts[:,1], 
-            index_parts[:,2]
-        ], names=[None, 'Volume'])
-        
-        df_restored = atlas_df.copy()
-        df_restored.index = original_multiindex
-        df_original = df_restored.unstack('Volume')
-
-        atlas_dfs[atlas] = df_original
+        atlas_df.sort_index(inplace=True)
         path = f"{save_dir}/Aggregated_{atlas}{batch_corr_ext}_us.csv"
         logging.info(f"Step: Saving oversampled {atlas} data to: {path}")
-        df_original.to_csv(path)
+        atlas_df.to_csv(path)
 
     return files_to_undersample.iloc[chosen_samples], rois, scalers
 
@@ -1117,27 +1092,12 @@ def hybrid_sample(files_to_resample: pd.DataFrame,
 
     intermediate_df = total_df.drop(columns=["Dataset", "Diagnosis", "Sample_status"]).T
 
-    atlas_dfs = {}
-
     for atlas, abbrev in atlas_map.items():
         atlas_df = intermediate_df[intermediate_df.index.str.startswith(abbrev)]
-        index_parts = np.array(atlas_df.index.str.split('^', n=2, expand=True).to_list())
-
-        original_multiindex = pd.MultiIndex.from_arrays([
-            index_parts[:,1], 
-            index_parts[:,2]
-        ], names=[None, 'Volume'])
-        
-        df_restored = atlas_df.copy()
-        df_restored.index = original_multiindex
-        df_original = df_restored.unstack('Volume')
-
-        df_original = df_original.astype(float)
-
-        atlas_dfs[atlas] = df_original
+        atlas_df.sort_index(inplace=True)
         path = f"{save_dir}/{atlas}_data{batch_corr_ext}_rs.csv"
         logging.info(f"Step: Saving resampled {atlas} data to: {path}")
-        df_original.to_csv(path)
+        atlas_df.to_csv(path)
 
     return new_metadata, rois, scalers
 

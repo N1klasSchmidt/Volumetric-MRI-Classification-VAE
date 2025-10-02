@@ -46,7 +46,6 @@ from utils.downstream_utils import (
     NewVAE_no_XCov_Wrapper_latent,
     run_shap_analysis,
     get_all_correlations,
-    run_interaction_term_analysis,
     predict_unseen_risk_from_latent,
     predict_clinical_from_latent,
     trace_latent_to_roi,
@@ -97,7 +96,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
             training_model_dir = os.path.join(experiment_config["experiment"]["base_experiment_to_load"], "training", "models")
             trained_model_paths = list(pathlib.Path(training_model_dir).rglob(f"*.pth"))
 
-            assert len(trained_model_paths) == 1, "Multiple models found at destination. Please specify exact path."
+            assert len(trained_model_paths) == 1, "Multiple or no models found at destination. Please specify exact path or choose a different experiment to load."
 
             trained_model_path = trained_model_paths[-1]
 
@@ -317,10 +316,6 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
         testing_run_experimental_details = experiment_config["analysis"][testing_run]
 
         model_config = copy.deepcopy(config)
-        if sorted(testing_run_diagnoses) == sorted(experiment_config["data"]["diagnoses"]):
-            model_config.ALL_LABELS = True
-        else:
-            model_config.ALL_LABELS = False
         
         model_config.DIAGNOSES = testing_run_diagnoses
         model_config.PURPOSE = testing_run
@@ -331,6 +326,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
             TIMESTAMP=None,
             DATA_DIR=model_config.OUTPUT_DIR, # We save the testing data in the same place as training!
             XCov=experiment_config["model"]["xcov"],
+            mode=str(testing_run),
         )
 
         testing_config.update_logging_dir_newvae()
@@ -351,28 +347,22 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
                                     device=config.DEVICE,
                                     label_mapping=label_mapping,
                                     original_diagnoses=config.DIAGNOSES,
+                                    extended_data_path=experiment_config["analysis"][testing_run]["extra_metadata_path"], 
                                     xcov=experiment_config["model"]["xcov"])
-        # else: 
-        #     predictor = SinglePredictor_no_XCov(logging_config=testing_config, 
-        #                                         model_config=model_config,
-        #                                         model=trained_model, 
-        #                                         run_id=testing_run, 
-        #                                         latent_dim=latent_dim,
-        #                                         device=config.DEVICE,
-        #                                         label_mapping=label_mapping,
-        #                                         original_diagnoses=config.DIAGNOSES,)
 
         all_data_paths_filtered = {}
         for atlas in sorted(atlas_map.keys()):
             all_data_paths_filtered[atlas] = os.path.join(experiment_config["data"]["data_dir"], f"raw_data_{testing_run}", f"{atlas}_data.csv")
 
-        logging.info("Step: Initialize internal testing data")
-        predictor.init_test_data(csv_paths=metadata_dict[testing_run],
-                                    data_paths=all_data_paths_filtered,
-                                    scalers=scalers)
+        logging.info("Step: Initialize testing data")
+        predictor.init_test_data(test_annotations=metadata_dict[testing_run],
+                                 data_paths=all_data_paths_filtered,
+                                 scalers=scalers
+                                 )
+        
         logging.info("Step: Computing performance")
         model_pred_metrics = predictor.compute_testing_performance(colors=diagnosis_colors_plotting)
-        logging.info(f"Performance of model on internal testing data: {model_pred_metrics}")
+        logging.info(f"Performance of model on testing data: {model_pred_metrics}")
 
         log_prediction_metrics(metrics=model_pred_metrics, epoch="best")
 
@@ -384,14 +374,12 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
 
         if experiment_config["analysis"][testing_run]["downstream"]: 
             logging.info(log_title("DOWNSTREAM ANALYSIS"))
-            
+            downstream_config = experiment_config["analysis"][testing_run]
             assert downstream_config["extra_metadata_path"] is not None, "To perform downstream analysis, pass additional metadata!"
 
-            downstream_config = experiment_config["analysis"][testing_run]
-
-            extended_metadata = pd.read_csv(downstream_config["extra_metadata_path"])
-
-            assert extended_metadata["Filename"].to_list().isin(metadata["Filename"]).all(), "Not all extended metadata entries found also in full metadata!"
+            extended_metadata = pd.read_csv(downstream_config["extra_metadata_path"], header=[0], index_col=0)
+            assert extended_metadata["Filename"].isin(metadata["Filename"]).all(), "Not all extended metadata entries found also in full metadata!"
+            extended_metadata.set_index("Filename", inplace=True, drop=True)
 
             extended_metadata_only_new = extended_metadata.copy()
             for var in ["Age", "Diagnosis", "Sex", "Dataset", "Codiagnosis"]: 
@@ -401,7 +389,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
             latent_data = pd.read_csv(f"{testing_config.LOGGING_DIR}/latent_space_data.csv", index_col=0)
             model_predictions = pd.read_csv(f"{testing_config.LOGGING_DIR}/testing_metadata_extended.csv", index_col=0)
 
-            unseen_diagnoses = [diag for diag in testing_run_diagnoses if not diag in experiment_config["data"]["diagnoses"]]
+            unseen_diagnoses = [diag for diag in testing_run_diagnoses if not diag in config.DIAGNOSES]
 
             if downstream_config["correlation_analysis"]:
                 logging.info(log_title("CORRELATION ANALYSIS"))
@@ -416,6 +404,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
                                     metadata=metadata,
                                     diagnoses=unseen_diagnoses,
                                     save_path=save_path,
+                                    original_model_diagnoses=config.DIAGNOSES,
                                     ) 
                 
                 # Compute correlations across all diagnoses
@@ -424,13 +413,8 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
                                     metadata=metadata,
                                     diagnoses=None,
                                     save_path=save_path,
+                                    original_model_diagnoses=config.DIAGNOSES,
                                     )
-                
-                run_interaction_term_analysis(model_data=model_predictions,
-                                      clinical_data=extended_metadata_only_new,
-                                      metadata=metadata,
-                                      save_path=save_path,
-                                      diagnoses=config.DIAGNOSES)
                 
             
             if downstream_config["latent_feature_analysis"]:
@@ -451,15 +435,12 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
                     extended_metadata_unseen_diag[unseen_diagnosis] = (extended_metadata_unseen_diag["Diagnosis"] == unseen_diagnosis).astype(int)
 
                     ########## Unseen-Diagnosis-Risk Prediction ##########
-                    unseen_risk_results, unseen_risk_latent_importance, unseen_risk_coeff = predict_unseen_risk_from_latent(
+                    unseen_risk_latent_importance, unseen_risk_coeff = predict_unseen_risk_from_latent(
                         target=unseen_diagnosis,
                         clinical=extended_metadata_unseen_diag,
                         latent=latent_data,
                         save_path=save_path,
                         colors=diagnosis_colors_plotting)
-                    
-                    unseen_risk_results.save(f"{save_path}/{unseen_diagnosis}_risk_summary.pkl")
-                    logging.info(f"Results saved to: {save_path}/{unseen_diagnosis}_risk_summary.pkl")
 
                     unseen_risk_filename = saliency_from_latent(unseen_risk_coeff, predictor, config, rois, save_path, config.DEVICE)
 
@@ -515,7 +496,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
                 else: 
                     wrapped_model = NewVAE_no_XCov_Wrapper(trained_model, config.DEVICE)
 
-                model_outputs = sorted(train_annotations_split["Diagnosis"].unique().to_list())
+                model_outputs = sorted(train_annotations_split["Diagnosis"].unique().tolist())
 
                 for idx, label in enumerate(model_outputs): 
 

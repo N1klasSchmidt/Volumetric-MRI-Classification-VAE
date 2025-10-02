@@ -66,14 +66,14 @@ class SinglePredictor():
         self.xcov = xcov
 
     # Initiliaze testing data on which the model will predict.
-    def init_test_data(self, csv_paths, data_paths, scalers):
-        annotations = pd.read_csv(csv_paths[0], header=[0])
-        self.test_annotations = annotations[["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]]
+    def init_test_data(self, test_annotations, data_paths, scalers):
+        #annotations = pd.read_csv(csv_paths[0], header=[0])
+        self.test_annotations = test_annotations[["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]]
 
         assert self.model_config.PURPOSE != "train"  # Ensuring that we scale the testing data! 
 
         subjects, _ , atlas_lengths = load_mri_data(
-                csv_paths=csv_paths,
+                annotations=self.test_annotations,
                 atlas_data_paths=data_paths,
                 scalers_per_atlas=scalers,
                 diagnoses=self.model_config.DIAGNOSES,
@@ -81,7 +81,6 @@ class SinglePredictor():
                 covars=self.model_config.COVARS,
                 # How to scale and subset the data
                 vol_to_use=self.model_config.VOLUMES,
-                all_labels=self.model_config.ALL_LABELS,
                 batch_corrected=self.model_config.BATCH_CORRECTION
             )
         self.atlas_lengths = atlas_lengths
@@ -215,7 +214,8 @@ class SinglePredictor():
             if current_label not in self.original_diagnoses: 
                 assert self.extended_data is not None, "If using non-training diagnoses during testing, ensure to pass extended data with 'Diagnosis_extra' column!"
                 sample_name = names[idx]
-                current_label = str(self.extended_data[sample_name]["Diagnosis_extra"])
+
+                current_label = str(self.extended_data.loc[self.extended_data["Filename"] == sample_name, "Diagnosis_extra"].values[0])
             
             current_label_idx = self.original_diagnoses.index(current_label) 
             empty_list[current_label_idx] = 1
@@ -275,15 +275,52 @@ class SinglePredictor():
 
         probs_df["Pred_class"] = probs_df["Pred_labels"].map(label_map)
 
+        probs_df.set_index("Filename", drop=True, inplace=True)
+        testing_metadata = self.test_annotations.copy().set_index("Filename", drop=True)
+
         # Merge with test annotations to maintain same order
-        metadata_pred = pd.merge(self.test_annotations, probs_df, on="Filename")
-        metadata_pred.set_index("Filename", inplace=True, drop=True)
+        metadata_pred = pd.concat([testing_metadata, probs_df], axis=1)
+        #metadata_pred = pd.merge(self.test_annotations, probs_df, on="Filename")
+        #metadata_pred.set_index("Filename", inplace=True, drop=True)
 
         # Save to CSV
         metadata_pred.to_csv(f"{self.logging_config.LOGGING_DIR}/testing_metadata_preds_{self.run_id}.csv")
         self.metadata_pred = metadata_pred
 
         return all_preds, all_labels, all_labels_corr, all_names
+    
+
+    def add_cols_prediction_meta(self):
+
+        col_ext_metadata_pred = self.metadata_pred.copy()
+
+        print(col_ext_metadata_pred)
+
+        # Initialize categorical columns with NaN values
+        add_columns = ["Confidence", "Uncertainty", "Misdiagnosis", "Male", "Female"]
+        for var_name in add_columns:
+            col_ext_metadata_pred[var_name] = np.nan
+
+        col_ext_metadata_pred['Pred_class'] = col_ext_metadata_pred['Pred_class'].astype('string')
+        #col_ext_metadata_pred.set_index("Filename", drop=False, inplace=True)
+
+        for idx, row in col_ext_metadata_pred.iterrows():
+
+            col_ext_metadata_pred.loc[idx, "Male"] = 1 if col_ext_metadata_pred.loc[idx, "Sex"] == "Male" else 0
+            col_ext_metadata_pred.loc[idx, "Female"] = 1 if col_ext_metadata_pred.loc[idx, "Sex"] == "Female" else 0
+
+            if col_ext_metadata_pred.loc[idx, "Pred_class"] == col_ext_metadata_pred.loc[idx, "Diagnosis"]:
+                col_ext_metadata_pred.loc[idx, "Misdiagnosis"] = 0
+            else: 
+                col_ext_metadata_pred.loc[idx, "Misdiagnosis"] = 1
+
+            pred_class = row["Pred_class"] 
+            col_ext_metadata_pred.loc[idx, "Confidence"] = row[pred_class]
+            col_ext_metadata_pred.loc[idx, "Uncertainty"] = 1-row[pred_class]
+        
+        col_ext_metadata_pred = col_ext_metadata_pred.reset_index(drop=False)
+        col_ext_metadata_pred.to_csv(f"{self.logging_config.LOGGING_DIR}/testing_metadata_extended.csv")
+        return
     
 
     # The proportion of incorrect diagnoses per variable can be investigated. The variables "Dataset" and "Diagnosis" are particularly interesting.
@@ -309,8 +346,8 @@ class SinglePredictor():
     # Calculate the ROC curve and the AUROC value for each of the diagnoses.
     def compute_auc(self, probs, labels, group="", colors={"HC":'darkorange', "MDD":'blue', "SCHZ":'red'}): 
         num_classes = len(self.original_diagnoses)
-
-        assert len(colors.keys()) == len(self.original_diagnoses), "Ensure that number of colors is equal to number of diagnoses!"
+        
+        #assert len(colors.keys()) == len(self.original_diagnoses), "Ensure that number of colors is equal to number of diagnoses!"
 
         cls_names = {}
         for idx, diag in enumerate(self.original_diagnoses):
@@ -318,7 +355,7 @@ class SinglePredictor():
 
         iterator_list = []
         for idx in range(num_classes):
-            if all(probs[:, idx] == 0): 
+            if idx in labels:
                 iterator_list.append(idx)
 
         fig = plt.figure(figsize=(6,6))
@@ -362,14 +399,15 @@ class SinglePredictor():
         if len(iterator_list) == 2:
             probs_corr = probs[:, max(iterator_list)] # Becuase now binary case! y_score should contain estimates of the class with the greater label (see documentation).
 
-            labels_corr = []
-            for i in range(len(labels)):
-                labels_corr.append(labels[i]-min(iterator_list))  # Floor all lables to 0,1
+            label_mapping = {min(iterator_list): 0, max(iterator_list): 1}
+            labels_corr = [label_mapping[label] for label in labels]
 
             multiclass_roc_auc = sk.metrics.roc_auc_score(y_true=labels_corr, y_score=probs_corr, average="weighted", multi_class="ovo")
         elif len(iterator_list) <= 1: 
             raise ValueError(f"Cannot compute AUROC value using only {len(iterator_list)} valid columns!")
         else:
+            #logging.info(labels)
+            #logging.info(probs)
             multiclass_roc_auc = sk.metrics.roc_auc_score(y_true=labels, y_score=probs, average="weighted", multi_class="ovo")
 
         return multiclass_roc_auc
@@ -379,6 +417,7 @@ class SinglePredictor():
     def compute_testing_performance(self, colors):
        
         test_predictions, test_labels, test_labels_corr, test_names = self.make_predictions(dataloader=self.dataloader)
+        self.add_cols_prediction_meta()
 
         test_labels_indices = torch.argmax(test_labels_corr, dim=1).tolist()  # Shape = [num_samples]
 
@@ -413,7 +452,12 @@ class SinglePredictor():
             "auroc": round(multiclass_auroc, 3),
         }
 
-        for diagnosis in self.metadata_pred["Diagnosis"].unique().to_list():
+        unseen_diagnoses = []
+        for diagnosis in self.metadata_pred["Diagnosis"].unique().tolist():
+            if not diagnosis in self.original_diagnoses:
+                unseen_diagnoses.append(diagnosis)
+
+        for diagnosis in unseen_diagnoses:
 
             diag_filenames = self.metadata_pred[self.metadata_pred["Diagnosis"] == diagnosis].index.to_list()
             non_diag_filenames = self.metadata_pred[self.metadata_pred["Diagnosis"] != diagnosis].index.to_list()

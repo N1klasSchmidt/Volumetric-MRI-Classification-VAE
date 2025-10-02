@@ -378,7 +378,7 @@ def latent_space_plot_2D(
     # The type of data being plotted. Used for the plot title and file name.
     data_type: str,
     # Name of the atlas / model whose latent space is being plotted.
-    atlas_name: str,
+    run_id: str,
     # What colors should be used for plotting the diagnoses? 
     diagnosis_colors: Dict,
     # The types of plots to generate. The function can generate PCA and UMAP plots. This functione expects the anndata to already
@@ -415,13 +415,13 @@ def latent_space_plot_2D(
             plt.savefig(
                 os.path.join(
                     save_path,
-                    f"{timestamp}_e{epoch}_{data_type}_latent_pca_atlas-{atlas_name}.png",
+                    f"{timestamp}_e{epoch}_{data_type}_latent_pca_atlas-{run_id}.png",
                 )
             )
             plt.savefig(
                 os.path.join(
                     save_path,
-                    f"{timestamp}_e{epoch}_{data_type}_latent_pca_atlas-{atlas_name}.svg",
+                    f"{timestamp}_e{epoch}_{data_type}_latent_pca_atlas-{run_id}.svg",
                 )
             )
         # Show the plot if specified
@@ -447,13 +447,13 @@ def latent_space_plot_2D(
             plt.savefig(
                 os.path.join(
                     save_path,
-                    f"{timestamp}_e{epoch}_{data_type}_latent_umap_atlas-{atlas_name}.png",
+                    f"{timestamp}_e{epoch}_{data_type}_latent_umap_atlas-{run_id}.png",
                 )
             )
             plt.savefig(
                 os.path.join(
                     save_path,
-                    f"{timestamp}_e{epoch}_{data_type}_latent_umap_atlas-{atlas_name}.svg",
+                    f"{timestamp}_e{epoch}_{data_type}_latent_umap_atlas-{run_id}.svg",
                 )
             )
         # Show the plot if specified
@@ -476,13 +476,13 @@ def latent_space_plot_2D(
             plt.savefig(
                 os.path.join(
                     save_path,
-                    f"{timestamp}_e{epoch}_{data_type}_latent_tsne_atlas-{atlas_name}.png",
+                    f"{timestamp}_e{epoch}_{data_type}_latent_tsne_atlas-{run_id}.png",
                 )
             )
             plt.savefig(
                 os.path.join(
                     save_path,
-                    f"{timestamp}_e{epoch}_{data_type}_latent_tsne_atlas-{atlas_name}.svg",
+                    f"{timestamp}_e{epoch}_{data_type}_latent_tsne_atlas-{run_id}.svg",
                 )
             )
         # Show the plot if specified

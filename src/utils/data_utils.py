@@ -100,10 +100,6 @@ def load_mri_data(
     train_or_test: str = "train",
     # Should only a specific volume measurement be used? Choose one from Vgm, Vwm, Vcsf.
     vol_to_use: str = None,
-    # Should fine tuning be considered? This changes the path of the extracted data.
-    fine_tuning: bool = False,
-    # Should all labels be allowed to be loaded?
-    all_labels: bool = False,
     # Has the data already been batch corrected? In this case no scaling!
     batch_corrected: bool = False, 
     ) -> Tuple:
@@ -144,11 +140,6 @@ def load_mri_data(
     data_overview = data_overview[data_overview["Diagnosis"].isin(diagnoses)]
     data_overview = data_overview[list(set(["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]+variables))]
 
-    if fine_tuning:  # The fine-tuning data has to be scaled with the rest to ensure similar performance!
-        fine_tuning_df = data_overview[data_overview["Diagnosis"] == "CTT"]
-        path_new_tune = f"/workspace/data/relevant_metadata/fine_tuning_metadata_xcov.csv"
-        fine_tuning_df.to_csv(path_new_tune)
-
     # produce one hot coded labels for each variable
     one_hot_labels = {}
     for var in variables:
@@ -167,7 +158,7 @@ def load_mri_data(
     for atlas, data_path in atlas_data_paths.items():
 
         atlas_lengths[atlas] = None
-        data = pd.read_csv(data_path, header=[0,1], index_col=0)
+        data = pd.read_csv(data_path, header=0, index_col=0)
 
         # The oversampled trianing data is already normalized and scaled.
         if train_or_test != "train" and scalers_per_atlas is not None and not batch_corrected:
@@ -176,17 +167,11 @@ def load_mri_data(
             mtypes = data.index.str.split('^').str.get(-1).unique()
             data, _ = scale_data_transform(data, mtypes, training_scalers=scalers)
         
-            
         data.sort_index(inplace=True)  # Crucial step! Oversampling of the input data causes an alphabetical sorting of the features! 
-        #print(f"Index: {data.index.to_list()[:10]}")
 
         all_file_names = data.columns
 
         for index, row in data_overview.iterrows():
-            
-            if not fine_tuning and not all_labels:
-                if row["Diagnosis"] == "CTT":
-                    continue
 
             if not row["Filename"] in all_file_names:
                 data_overview.drop([index], inplace=True)
@@ -194,13 +179,8 @@ def load_mri_data(
                 continue
 
             file_name = row["Filename"]
-
-            # if file_name in subjects: 
-            #     if data_path in subjects[file_name]["measurements"]:
-            #         continue
-
             patient_data = data[file_name]
-            flat_patient_data = flatten_array(patient_data).tolist()
+            flat_patient_data = patient_data.values.tolist()
 
             if atlas_lengths[atlas] is None:
                 atlas_lengths[atlas] = len(flat_patient_data)
@@ -256,8 +236,8 @@ def process_latent_space_2D(
     umap_neighbors: int,
     # The random seed for reproducibility of the UMAP calculation.
     seed: int,
-    # Name of the atlas / model whose latent space should be processed. 
-    atlas_name,
+    # Name of the run, for which the latent space should be processed. 
+    run_id,
     # Whether the data should be saved or not. If True, save_path, timestamp, epoch and data_type must be provided.
     save_data: bool = False,
     # The path where the data should be saved.
@@ -286,7 +266,7 @@ def process_latent_space_2D(
     # save the data if specified
     if save_data:
         adata.write_h5ad(
-            os.path.join(save_path, f"{timestamp}_e{epoch}_latent_{data_type}_atlas-{atlas_name}.h5ad")
+            os.path.join(save_path, f"{timestamp}_e{epoch}_latent_{data_type}_atlas-{run_id}.h5ad")
         )
 
     # return the processed data

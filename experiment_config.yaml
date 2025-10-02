@@ -9,7 +9,7 @@ experiment:
   # Set to True to train a new model; False to load a pre-trained one.
   train_model: false
   # If train_model is False, specify the experiment path to load weights from.
-  base_experiment_to_load: "/workspace/experiments/2025-09-29_16-16_experiment_CLNS"
+  base_experiment_to_load: "/workspace/experiments/2025-09-26_11-05_NewVAE_multi_XCov_hybrid_random_xcov"
   # Base directory where all results (logs, models, metrics) will be saved
   output_root_dir: "/workspace/experiments"
 
@@ -60,9 +60,6 @@ data:
     # "all" to use entire removed subset or specify a value from remove_within_variable or remove_variable_values.
     test_on_subset: "all"
 
-    # Is there any additional, extended metadata available for 
-    extra_metadata_paths: ["/workspace/data/NSS_metadata.csv", "/workspace/data/whiteCAT_metadata.csv"]
-
     # Split into data for training / validation and testing by taking proportions of entire data
     train_valid_proportion: 0.8
   
@@ -93,7 +90,7 @@ analysis:
     # Is there additional metadata associated with this testing data? 
     # Regardless of train_test_split, pass this as a single df with rosw=samples, columns=vars
     # Ensure a "Diagnosis_extra" column, where each diagnosis is mapped to one of the training outputs!
-    extra_metadata_path: None
+    extra_metadata_path: null
     correlation_analysis: false
     SHAP_analysis: false
     latent_feature_analysis: false

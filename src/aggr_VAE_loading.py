@@ -22,8 +22,6 @@ from utils.logging_utils import (
 # Use non-interactive plotting to avoid tmux crashes
 matplotlib.use("Agg")
 
-
-
 def load_data_for_model(config, train_df, valid_df, resampling_ext, atlas_map):
 
     # Set seed for reproducibility
@@ -46,8 +44,6 @@ def load_data_for_model(config, train_df, valid_df, resampling_ext, atlas_map):
         train_or_test="train",
         # How to scale and subset the data
         vol_to_use=None,
-        fine_tuning=config.FINE_TUNING,
-        all_labels=config.ALL_LABELS,
         batch_corrected=config.BATCH_CORRECTION,
     )
 
@@ -59,8 +55,6 @@ def load_data_for_model(config, train_df, valid_df, resampling_ext, atlas_map):
         train_or_test="train",
         # How to scale and subset the data
         vol_to_use=None,
-        fine_tuning=config.FINE_TUNING,
-        all_labels=config.ALL_LABELS,
         batch_corrected=config.BATCH_CORRECTION,
     )
 

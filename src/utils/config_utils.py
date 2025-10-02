@@ -309,7 +309,8 @@ class TestingConfig:
             DATA_DIR,
             SEED,
             CTT = None,
-            XCov: bool = True
+            XCov: bool = True,
+            mode: str = "test_1"
             ):
         
         self.UMAP_NEIGHBORS = UMAP_NEIGHBORS
@@ -317,7 +318,7 @@ class TestingConfig:
         self.TIMESTAMP = None
         self.SEED = SEED
         self.CTT = CTT
-        self.MODE = "internal"
+        self.MODE = mode
 
         if TIMESTAMP is not None:
             self.TIMESTAMP = TIMESTAMP
