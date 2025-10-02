@@ -3,13 +3,13 @@ sys.path.append("/workspace/src")
 import yaml
 from RUN_aggr_VAE import run_VAE_experiment
 
-# Specify: 
-# - Which groups should be used for testing? 
-# - Where is the data and metadata located 
-# - Which model should be used? If Xcov, which covariate in the metadata -> check that possible! 
-# - What atlases does the input data contain -> Determine abbreviation automatically! 
-# - Is the input data either csv or h5? 
-# - Should a model be trained or simply a model loaded? Loaded from which other experiment? 
+# ====================================================================================================
+# **RUN Your Experiment Here**
+#
+# This is the central script for running a new experiment. Adjust the experiment and model parameters
+# in the experiment_config.yaml and model_config.yaml files respectively. Ensure that all data is 
+# passed in the right format. This might require individual pre-processing of your data.  
+# ====================================================================================================
 
 with open("/workspace/experiment_config.yaml", 'r') as file:
     experiment_config = yaml.safe_load(file)
@@ -18,4 +18,3 @@ with open("/workspace/model_config.yaml", 'r') as file:
     model_config = yaml.safe_load(file)
 
 run_VAE_experiment(experiment_config, model_config)
-
