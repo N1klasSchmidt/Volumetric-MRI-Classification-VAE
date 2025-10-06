@@ -24,6 +24,7 @@ from utils.helper_utils import (
     undersample,
     hybrid_sample,
     no_resample, 
+    batch_correct,
     plot_umap
     )
 
@@ -168,11 +169,16 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
     metadata_dict = determine_split(experiment_config["data"]["train_test_split"], metadata)
     resplit_data(df_dict=metadata_dict, output_dir=config.OUTPUT_DIR, data_type=experiment_config["data"]["data_format"])
 
+    bat_corr_ext = ""
+    if experiment_config["data"]["batch_correction"]:
+        batch_correct(atlas_map, metadata, metadata_dict, experiment_config["data"]["data_dir"], experiment_config["data"]["data_format"])
+        bat_corr_ext = "_bat_corr_"
+
     config.TRAIN_DATA_PATH = f"/workspace/data/raw_data_train_valid"
 
     train_annotations_split, valid_annotations_split = split_annotations(annotations=metadata_dict["train_valid"], proportion=experiment_config["data"]["train_proportion"])
 
-    # Oversampling of the minority class labels (MDD and SCHZ)
+    # Oversampling of the minority class labels
     section_title = "OVER- / UNDERSAMPLING" 
     logging.info(log_title(section_title))
 
@@ -185,30 +191,39 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
                                     files_not_to_oversample=valid_annotations_split,
                                     method=experiment_config["data"]["resampling_method"],
                                     save_dir="/workspace/data/raw_data_train_valid",
-                                    atlas_map=atlas_map)
-        resampling_ext = "os.csv"
+                                    atlas_map=atlas_map,
+                                    batch_corr_ext=bat_corr_ext)
+        resampling_ext = f"{bat_corr_ext}os.csv"
         train_valid_df_sampled = pd.concat([train_df_sampled, valid_annotations_split])
 
-    # Undersampling of the majority class labels (HC and SCHZ)
+    # Undersampling of the majority class labels
     elif experiment_config["data"]["resampling"] == "under":
         logging.info(f"Performing undersampling of data with method: {resample_method}") 
         train_df_sampled, rois, scalers = undersample(files_not_to_undersample=valid_annotations_split,
                                     files_to_undersample=train_annotations_split,
                                     method=experiment_config["data"]["resampling_method"],
                                     save_dir="/workspace/data/raw_data_train_valid",
-                                    atlas_map=atlas_map)
-        resampling_ext = "us.csv"
+                                    atlas_map=atlas_map,
+                                    batch_corr_ext=bat_corr_ext)
+        resampling_ext = f"{bat_corr_ext}us.csv"
         train_valid_df_sampled = pd.concat([train_df_sampled, valid_annotations_split])
 
-    # Undersampling of the majority class label (HC) and oversampling of the minority class label (MDD) to target label (SCHZ)
+    # Undersampling of the majority class label and oversampling of the minority class label to target label
     elif experiment_config["data"]["resampling"] == "hybrid":
         logging.info(f"Performing hybrid sampling of data with method: {resample_method}")
+
+        assert len(experiment_config["data"]["hybrid_ranking"]) == 3, f"Hybrid sampling only available for three diagnoses. {len(experiment_config["data"]["hybrid_ranking"])} is an invalid number of diagnoses!"
+        assert len(train_annotations_split["Diagnosis"].unique()) == 3, f"Training annotations don't contain exactly 3 unique diagnoses. Instead {len(train_annotations_split["Diagnosis"].unique())}."
+
+        diag_ranks = experiment_config["data"]["hybrid_ranking"]
+
         train_df_sampled, rois, scalers = hybrid_sample(files_not_to_resample=valid_annotations_split,
                                         files_to_resample=train_annotations_split,
-                                        class_props= {"majority": "HC", "target": "SCHZ", "minority": "MDD"},
+                                        class_props= {"majority": diag_ranks[2], "target": diag_ranks[1], "minority": diag_ranks[0]},
                                         save_dir="/workspace/data/raw_data_train_valid",
-                                        atlas_map=atlas_map)
-        resampling_ext = "rs.csv"
+                                        atlas_map=atlas_map,
+                                        batch_corr_ext=bat_corr_ext)
+        resampling_ext = f"{bat_corr_ext}rs.csv"
         train_valid_df_sampled = pd.concat([train_df_sampled, valid_annotations_split])
 
     elif experiment_config["data"]["resampling"]  == None:
@@ -217,7 +232,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
                                     training_files=train_annotations_split,
                                     save_dir="/workspace/data/raw_data_train_valid",
                                     atlas_map=atlas_map)
-        resampling_ext = "nors.csv"
+        resampling_ext = f"{bat_corr_ext}nors.csv"
         train_valid_df_sampled = pd.concat([train_annotations_split, valid_annotations_split])
 
     else: 
@@ -377,9 +392,11 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
             downstream_config = experiment_config["analysis"][testing_run]
             assert downstream_config["extra_metadata_path"] is not None, "To perform downstream analysis, pass additional metadata!"
 
-            extended_metadata = pd.read_csv(downstream_config["extra_metadata_path"], header=[0], index_col=0)
-            assert extended_metadata["Filename"].isin(metadata["Filename"]).all(), "Not all extended metadata entries found also in full metadata!"
-            extended_metadata.set_index("Filename", inplace=True, drop=True)
+            extended_metadata_raw = pd.read_csv(downstream_config["extra_metadata_path"], header=[0], index_col=0)
+            assert extended_metadata_raw["Filename"].isin(metadata["Filename"]).all(), "Not all extended metadata entries found also in full metadata!"
+            extended_metadata_raw.set_index("Filename", inplace=True, drop=True)
+
+            extended_metadata = extended_metadata_raw.loc[testing_data["Filename"].to_list(), :]
 
             extended_metadata_only_new = extended_metadata.copy()
             for var in ["Age", "Diagnosis", "Sex", "Dataset", "Codiagnosis"]: 

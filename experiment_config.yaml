@@ -1,7 +1,9 @@
 # ===================================================================
 # 1. EXPERIMENT CONTROL
 # Define the overall run and saving behavior.
+# To pass no value please use 'null'. 'None' is registered as string.
 # ===================================================================
+
 experiment:
   # A unique name for this run (used for output directory creation). 
   # If left empty a name is automatically generated.
@@ -38,6 +40,9 @@ data:
   diagnoses: ["HC", "MDD", "SCHZ", "CTT"]
   diagnosis_colors: ["darkorange", "blue", "red", "navy"]
 
+  # Should a batch correction of the data be performed using PyCombat?
+  batch_correction: null
+
   # --- Resampling of data  --- 
   # What resampling method should be used on the data? Choice between "hybrid", "over", "under" and None
   resampling: "hybrid"
@@ -45,6 +50,9 @@ data:
   # Undersampling provides: "allknn", "nm2", "random" and "tomek"
   # Oversampling provides: "ADASYN", "SMOTE", "SMOTENC" and "random"
   resampling_method: ""
+  # If resampling is "hybrid", please specify [minority_label, target, majority_label]
+  hybrid_ranking: ["MDD", "SCHZ", "HC"]
+
   # Type of measurement to use for training. "None" defaults to all. ("Vgm", "Vwm", "Vcsf")
   mtype: None
   # Split into data for model training and model validation 
@@ -99,7 +107,7 @@ analysis:
     downstream: true
     extra_metadata_path: "/workspace/data/extended_metadata.csv"
     correlation_analysis: true
-    SHAP_analysis: true
+    SHAP_analysis: false
     latent_feature_analysis: true
 
 #joint_umap: True

@@ -17,23 +17,21 @@ import nibabel as nib
 from nilearn import plotting
 import matplotlib.pyplot as plt
 import xml.etree.ElementTree as ET
-import json
 import hashlib
-
-
 
 # ====================================================================================================
 # **HELPER FUNCTIONS**
 #   
-# While data_processing_2D.py handles all the processing tasks after the input .h5 files have been 
-# loaded, the functions here revolve around handling the compressed .h5 files.Especially the resplit_data 
-# is essential, as it reshuffles the entire dataset from the h5 files into more managable csv files. 
+# While data_utils.py handles all the processing tasks after the input .h5 and .csv files have been 
+# loaded, the functions here revolve around handling the preprocessed data. Especially the resplit_data 
+# is essential, as it reshuffles the entire dataset into very managable and orderly csv files. 
 # This is performed before every training run, which ensures that always the correct data is being
-# passed to the data_processing_*.py functions. 
+# passed to the data_utils functions. 
 #
 # Here you can also find functions used for plotting e.g. UMAPs or Saliency maps, as well as normaliz-
 # ation and scaling functions. A crucial part are also the three resampling functions: oversample(),
-# undersample() and hybrid_sample().
+# undersample() and hybrid_sample(), which handle the resampling of unbalanced data. 
+#
 # ====================================================================================================
 
 
@@ -53,6 +51,7 @@ def flatten_array(df: pd.DataFrame) -> np.ndarray:
     flat_array = np.nan_to_num(array.flatten())
     return flat_array
 
+# Get a mapping of atlas name to atlas abbreviation [X]
 def get_atlas_map(atlases: List) -> Dict:
     atlas_map = {}
     for atlas in sorted(atlases): 
@@ -63,141 +62,19 @@ def get_atlas_map(atlases: List) -> Dict:
         else: 
             atlas_map[atlas] = f"[{caps[0]}]"
     return atlas_map
-
-# Normalization and scaling of input data. Scaling is performed on a per datatype basis. There are two options for scaling
-# - "z" for z-scaling along the ROIs
-# - "iqr" for inter quantile range scaling
-def normalize_and_scale_df(
-        df: pd.DataFrame, 
-        df_meta: pd.DataFrame, 
-        scaling_method: str = "z", 
-        scale_per_dataset: bool = False,
-        vol_to_use: str = None,
-        ) -> pd.DataFrame:
-    
-    # Normalizes the columns (patient volumes) by Log Scaling and scales the rows (ROIs) with Z-transformation.
-
-    df_copy = df.copy()
-    column_sums = df_copy.sum()
-    
-    # Apply the formula: ln((10000*value)/sum_values + 1) "Log transformation"
-    transformed_df = np.log((10000 * df_copy) / column_sums + 1)
-
-    norm_copy = transformed_df.copy()
-  
-    cols = norm_copy.columns.get_level_values(-1).tolist() # Select lowest level of Multiindex (Measurements: Vgm, Vwm, Vcsf)
-    unique_cols = list(set(cols))
-
-    filename_to_dataset_map = df_meta.set_index("Filename")["Dataset"]
-    filenames_in_data = norm_copy.columns.get_level_values(0).unique()
-    datasets = df_meta["Dataset"].unique().tolist()
-
-    for col_type in unique_cols:  # scale each of the measurement types separately
-        vols_to_scale = [col for col in norm_copy.columns if col[-1] == col_type]
-            
-        # Scale the selected columns per row
-        z_scaled = norm_copy[vols_to_scale]
-        iqr_scaled = df_copy[vols_to_scale]
         
-        if scale_per_dataset:  # Scale each of the datasets separately if desired
-            for dataset in datasets: 
-                filenames_for_target_dataset = filenames_in_data[
-                        filename_to_dataset_map.reindex(filenames_in_data) == dataset
-                        ].tolist()
-
-                sets_to_scale = [col_tuple for col_tuple in z_scaled.columns 
-                                if col_tuple[0] in filenames_for_target_dataset]
-                
-                if not sets_to_scale: # Skip if no columns for this dataset and col_type combination
-                    continue
-
-                if scaling_method == "z":  # For z-scaling
-                    z_scaled_dataset_sub = z_scaled[sets_to_scale]
-                    
-                    z_scaled_dataset_sub = z_scaled_dataset_sub.apply(
-                        lambda row: (row - row.mean()) / row.std() if row.std() > 0 else pd.Series(0.0, index=row.index),
-                        axis=1
-                        )
-
-                    z_scaled.loc[:, sets_to_scale] = z_scaled_dataset_sub
-                
-                if scaling_method == "iqr":  # For inter-quantile-range scaling
-                    iqr_scaled_dataset_sub = iqr_scaled[sets_to_scale]
-                    
-                    iqr_scaled_dataset_sub = iqr_scaled_dataset_sub.apply(
-                        lambda row: (row - row.median()) / (row.quantile(0.75)-row.quantile(0.25)) if (row.quantile(0.75)-row.quantile(0.25)) > 0 else pd.Series(0.0, index=row.index),
-                        axis=1
-                        )
-
-                    iqr_scaled.loc[:, sets_to_scale] = iqr_scaled_dataset_sub
-
-                    # Optionally perform on the rows a z-scaling to prevent possible NaNs during training. 
-                    # z_scaled_dataset_sub = iqr_scaled[sets_to_scale].apply(
-                    #     lambda row: row / row.std() if row.std() > 0 else pd.Series(0.0, index=row.index),
-                    #     axis=1
-                    #     )
-                    
-                    # iqr_scaled.loc[:, sets_to_scale] = z_scaled_dataset_sub
-        
-        else:  # Otherwise simply scale across all datasets
-            if scaling_method == "z":  # For z-scaling
-                z_scaled = z_scaled.apply(
-                    lambda row: (row - row.mean()) / row.std() if row.std() > 0 else pd.Series(0.0, index=row.index),
-                    axis=1
-                )
-
-            if scaling_method == "iqr":  # For inter-quantile-range scaling
-                iqr_scaled = iqr_scaled.apply(
-                    lambda row: (row - row.median()) / (row.quantile(0.75)-row.quantile(0.25)) if (row.quantile(0.75)-row.quantile(0.25)) > 0 else pd.Series(0.0, index=row.index),
-                    axis=1
-                )
-
-        # Output for z-scaled data
-        if scaling_method == "z":
-            norm_copy.loc[:, vols_to_scale] = z_scaled
-        
-        # Output for IQR scaled data
-        if scaling_method == "iqr":
-            df_copy.loc[:, vols_to_scale] = iqr_scaled
-    
-    if scaling_method == "z":
-        if vol_to_use is not None:  # Subset only a certain type of measurement (Vgm, Vwm, Vcsf)
-            subset = [col for col in norm_copy.columns if col[-1] == vol_to_use]
-            return norm_copy[subset]
-        else: 
-            return norm_copy
-    
-    if scaling_method == "iqr":
-        if vol_to_use is not None and scaling_method == "iqr":  # Subset only a certain type of measurement (Vgm, Vwm, Vcsf)
-            subset = [col for col in norm_copy.columns if col[-1] == vol_to_use]
-            return df_copy[subset]
-        else: 
-            return df_copy
-        
-# Primary standardization function for aggregated VAE model. If no scalers are passed, new one are fit to the assumed training data. Otherwise, existing scalers are applied to assumed validation or training data. 
+# Primary standardization function for aggregated VAE model. If no scalers are passed, new one are fit to the assumed training data. 
+# Otherwise, existing scalers are applied to assumed validation or training data. Returns a tuple of(scaled_dataframe, scalers_dict) 
+# where scalers_dict has structure {m_type: StandardScaler}. Function to be applied to each atlas data separately
 def scale_data_transform(
+    # Data frame with ROIs^mtype as rows and samples as columns 
     df: pd.DataFrame,
+    # List of measurement types which were extracted for this atlas
     mtypes: List[str], 
+    # Dictionary mapping measurement types to fitted StandardScaler objects. If None, new scalers are fit.
     training_scalers: Dict[str, StandardScaler] = None,  # During scaling of validation and testing data we use the scaler from the training.
     log_transform: bool = True,
 ) -> Tuple[pd.DataFrame, Dict[str, StandardScaler]]:
-    """
-    Normalizes and scales volumetric data using log transformation and StandardScaler.
-
-    The function first applies a log transformation to normalize ROI volumes relative
-    to the total volume of each scan. It then applies Z-score scaling (StandardScaler)
-    to the ROIs (rows). Scaling is performed across all datasets combined. Ideally the
-    scaling would be per-datasets, but they differ between training and testing. 
-
-    Args:
-        df: DataFrame with ROIs as rows and multi-index columns (Filename, MeasurementType).
-        training_scalers: Dictionary mapping measurement types to fitted StandardScaler objects.
-                         If None, new scalers will be fitted. If provided, these scalers will be used
-                         for transformation (for validation/test data).
-
-    Returns:
-        Tuple of (scaled_dataframe, scalers_dict) where scalers_dict has structure {m_type: StandardScaler}.
-    """
     
     get_training_scalers = {}
 
@@ -244,7 +121,7 @@ def scale_data_transform(
 
     return scaled_df, get_training_scalers
 
-# Normalizes the columns of a data frame by log-transformation
+# Normalizes the columns of a data frame by log-transformation (used by batch_correct)
 def normalize_columns(df: pd.DataFrame):
     col_sums = df.sum()
     log_transformed_df = np.log((10000 * df) / col_sums + 1)
@@ -292,31 +169,18 @@ def read_hdf5_to_df(filepath: str):
     except Exception as e:
         logging.info(f"Error reading {filepath}: {e}")
         return None
-    
-    
-def split_df(
-        path_original: str, 
-        path_to_dir: str
-        ):
-
-    df = pd.read_csv(path_original, header=[0])
-    df = df.drop(columns=["Unnamed: 0"])
-
-    for option in ["training", "testing"]:
-        if option == "training":
-            path = f"{path_to_dir}/{option}_metadata.csv"
-            subset_df = df[df["Usage_original"] != "testing"]
-            subset_df.to_csv(path)
-
-        elif option == "testing":
-            path = f"{path_to_dir}/{option}_metadata.csv"
-            subset_df = df[df["Usage_original"] == option]
-            subset_df.to_csv(path)
 
 
 # Improved function to resplit the data that takes any number of splits, applying them to the input data and outputting corresponding csv files
 # with the respective splits.
-def resplit_data(df_dict: Dict, output_dir: str, data_type: str = "csv"):
+def resplit_data(
+    # Dictionary that maps run_name e.g. train_valid to a pandas data frame that contains the corresponding metadata
+    df_dict: Dict, 
+    # Path to save the newly split data
+    output_dir: str, 
+    # What type of data is used as input. Either "csv" or "h5"
+    data_type: str = "csv"
+    ):
 
     atlases = ["cobra", "lpba40", "neuromorphometrics", "suit", "thalamic_nuclei", "thalamus"]
 
@@ -359,9 +223,11 @@ def resplit_data(df_dict: Dict, output_dir: str, data_type: str = "csv"):
 # held out testing set are returned. This is all adjusted through a central config file and is performed on a metadata file 
 # that contains all the data. 
 def determine_split(
+        # Dictionary to handle splitting of train-test data, taking several subsets of the data if desired
         split_config: Dict, 
-        meta: pd.DataFrame
-        ) -> Dict:
+        # Metadata of all samples
+        meta: pd.DataFrame,
+    ) -> Dict:
 
     meta_split = {}
 
@@ -403,9 +269,9 @@ def determine_split(
             logging.info("Not testing on removed data subset.")
 
     for purpose, df in meta_split.items(): 
-        print(f"\n Shuffled metadata for {purpose}")
-        print(f"Shape: {df.shape}")
-        print(f"{df.head(5)}")
+        logging.info(f"\n Shuffled metadata for {purpose}")
+        logging.info(f"Shape: {df.shape}")
+        logging.info(f"{df.head(5)}")
 
     return meta_split
 
@@ -461,31 +327,6 @@ def split_annotations(
             second = pd.concat([second, dataset_annotations[split:]], ignore_index=True)
 
     return first, second
-
-
-# In the case there are more metadata entries than data points, the metadata has to be filtered to prevent shape mismatches. 
-def filter_all_metadata(df: pd.DataFrame, data_path: str, atlas_name: str):
-    data_train_path = data_path+f"/train_xml_data/Aggregated_{atlas_name}.csv"
-    data_test_path = data_path+f"/test_xml_data/Aggregated_{atlas_name}.csv"
-    data_hold_out_path = data_path+f"/hold_out_xml_data/Aggregated_{atlas_name}.csv"
-
-    data_train = pd.read_csv(data_train_path, header = [0,1], index_col=0)
-    data_test = pd.read_csv(data_test_path, header = [0,1], index_col=0)
-    data_hold_out = pd.read_csv(data_hold_out_path, header = [0,1], index_col=0)
-
-    data = pd.concat([data_train, data_test, data_hold_out], axis=0)
-
-    all_file_names = data.columns.get_level_values(0).to_list()
-    logging.info(f"Original metadata shape: {df.shape}")
-
-    for index, row in df.iterrows():
-        if not row["Filename"] in all_file_names:
-            df.drop([index], inplace=True)
-            continue
-
-    logging.info(f"New metadata shape: {df.shape}")
-    df.to_csv("/workspace/data/relevant_metadata/full_metadata_filtered.csv")
-    return df
 
 
 # This function takes the existing model metrics as a DataFrame and the metrics of the current epoch as a list of dictionaries.
@@ -559,24 +400,30 @@ def loss_proportions(
     # Return the dictionary of loss proportions
     return prop_dict
 
+# ======================================================================================================================================================
+
 # This function preprocesses the data using batch correction. Categorical variables are binarized with the LabelEncoders, then, using PyCombat 
-# the batch correction is carried out. Finally, the batch corrected data is scaled and saved accordingly. Optionally plot a UMAP of the new
-# features. In the past the batch correction was too strong, eliminating biological variance.
+# the batch correction is carried out. Finally, the batch corrected data is scaled and saved accordingly. The batch correction should be applied
+# before any scaling and/or resampling.  
+# In the past the batch correction was too strong, eliminating biological variance. For neuroimaging purposes it is not recommended.
+def batch_correct(
+        # Mapping of atlas name : abbreviation
+        atlas_map: Dict,
+        # Metadata of all samples
+        metadata: pd.DataFrame,
+        # Dictionary that specifies how the data is split for training, validation and testing
+        data_split: Dict,
+        # Path to load and then save the processed data 
+        load_dir: str, 
+        # Type of data that is being loaded
+        data_type: str = "csv",
+        ) -> None:
 
-def batch_corrected_preprocessing(
-        train_df: pd.DataFrame, 
-        test_df: pd.DataFrame, 
-        hold_out_df: pd.DataFrame,
-        metadata: pd.DataFrame) -> None:
-
-    atlas_map = {"neuromorphometrics": "[N]",
-            "lpba40": "[L]",
-            "suit": "[S]",
-            "cobra": "[C]",}
 
     # Load all data, across all atlases and modalities (train, test, hold_out)
-    all_unscaled_uncorrected_data = join_all_h5(metadata, atlas_map)
+    all_unscaled_uncorrected_data = load_all_data_no_scale(metadata, atlas_map, load_dir, data_split, data_type)
 
+    # log normalize the data prior to batch correction
     log_transformed_uncorrected_data = normalize_columns(all_unscaled_uncorrected_data)
 
     logging.info(log_title("BATCH CORRECTION"))
@@ -612,97 +459,99 @@ def batch_corrected_preprocessing(
     logging.info("Performning batch correction with PyCombat")
     all_unscaled_corrected_data = pycombat(filtered_rows_uncorrected_data, batch, mod=mod_list)
 
-    logging.info(log_title("SCALING"))
-    train_data, test_data = scale_and_save_corrected_data(all_unscaled_corrected_data, 
-                                  atlas_map=atlas_map,
-                                  train_df=train_df,
-                                  test_df=test_df,
-                                  hold_out_df=hold_out_df)
-    
-    #logging.info(log_title("COMPUTING UMAPs"))
-    #umap_correction(all_unscaled_corrected_data, metadata, "all_data")
-    #umap_correction(test_data, metadata, "test_data")
-
+    logging.info(log_title("SCALING BATCH CORR DATA"))
+    scale_and_save_corrected_data(all_unscaled_corrected_data, atlas_map, data_split, load_dir)
     return 
 
 
-# This function essentially performs together with scale_and_save_corrected_data the function of resplit_v2, converting -h5 files to separate csv files
-def join_all_h5(
+# This function essentially performs together with scale_and_save_corrected_data the function of load_all_data, but without scaling! 
+def load_all_data_no_scale(
+        # Metadata of all samples
         metadata: pd.DataFrame,
+        # Mapping of atlas names: abbreviation. Just needed for list of used atlases.
         atlas_map: Dict,
-        ) -> pd.DataFrame:
+        # Directory to load data from
+        load_dir: str,
+        # Dictionary that specifies how the samples are split in training, validation, testing
+        data_split: Dict, 
+        # Type of data that should be loaded 
+        data_type: str = "csv",
+    ) -> pd.DataFrame:
     
     joined_df = None
 
     for atlas in atlas_map.keys():
         atlas_abbrev = atlas_map[atlas]
 
-        path_train = f"/workspace/data/raw_extracted_xml_data/train_xml_data/Aggregated_{atlas}.h5"
-        path_test = f"/workspace/data/raw_extracted_xml_data/test_xml_data/Aggregated_{atlas}.h5"
-        #path_hold_out = f"/workspace/data/raw_extracted_xml_data/hold_out_xml_data/Aggregated_{atlas}.h5"
-        
-        train_data = pd.read_hdf(path_train,key='atlas_data')
-        test_data = pd.read_hdf(path_test, key='atlas_data')
-        #hold_out_data = pd.read_hdf(path_hold_out, key='atlas_data')
+        atlas_data_list = []
 
-        atlas_data_df = pd.concat([train_data, test_data], axis=1)
+        for run_name in data_split.keys():
+            path = f"{load_dir}/raw_data_{run_name}/{atlas}_data.{data_type}"
+            if data_type == "csv":
+                data = pd.read_csv(path, header=0, index_col=0)
+                atlas_data_list.append(data)
+            elif data_type == "h5":
+                data = pd.read_hdf(path ,key='atlas_data')
+                atlas_data_list.append(data)
+            else:
+                raise ValueError(f"Unsupported data type: {data_type}")
+
+        atlas_data_df = pd.concat(atlas_data_list, axis=1)
 
         filter_files = metadata.index.to_list()
         atlas_data_df = atlas_data_df.loc[:, filter_files]
-        
-        # We convert the mutli-index to a single index adding the volume type to the row name instead
-        df_stacked = atlas_data_df.stack(level='Volume', future_stack=True)
-        df_transformed_index = df_stacked.index.map(lambda x: f"{atlas_abbrev}^{x[0]}^{x[1]}")  # By adding an atlas-abbreviation we can easily trace back the ROIs to the atlas.
-        df_final = df_stacked.set_axis(df_transformed_index, axis=0)
-        df_final.index.name = 'Feature_Combined'
+
+        prefix = f"{atlas_abbrev}^"
+        atlas_data_df.index = atlas_data_df.index.map(lambda x: f"{prefix}{x}")
 
         if joined_df is None:
-            joined_df = df_final
+            joined_df = atlas_data_df
         else:
-            joined_df = pd.concat([joined_df, df_final])
+            joined_df = pd.concat([joined_df, atlas_data_df])
     return joined_df
+
 
 # This function scales and saves the batch corrected data. It is integrated with the resampling functions, as not to perform scaling twice. 
 # All data is saved to their original file paths again, allowing seamless integration with the other processing functions. 
 def scale_and_save_corrected_data(
+        # All unscaled data
         unscaled_data: pd.DataFrame, 
+        # Mapping of atlas names to abbreviations
         atlas_map: Dict,
-        train_df: pd.DataFrame, 
-        test_df: pd.DataFrame,
-        hold_out_df: pd.DataFrame,
+        # Dictionary specifying the split of training, validation and testing samples
+        data_split: Dict,
+        # Directory to save the data
+        data_dir: str, 
         ):
 
     for atlas, abbrev in atlas_map.items():
         logging.info(f"Saving {atlas} batch corrected and scaled training, testing and hold-out data")
         atlas_df = unscaled_data[unscaled_data.index.str.startswith(abbrev)]
-        index_parts = np.array(atlas_df.index.str.split('^', n=2, expand=True).to_list())
-
-        original_multiindex = pd.MultiIndex.from_arrays([
-            index_parts[:,1], 
-            index_parts[:,2]
-        ], names=[None, 'Volume'])
         
-        df_restored = atlas_df.copy()
-        df_restored.index = original_multiindex
-        df_original = df_restored.unstack('Volume')
+        df_original = atlas_df.copy()
 
-        df_original_train = df_original[train_df["Filename"]]
-        df_original_test = df_original[test_df["Filename"]]
-        df_original_hold_out = df_original[hold_out_df["Filename"]]
+        scalers = None
 
-        # Scale the training data and transform the testing data with the fitted scalers
-        df_scaled_train, training_scalers = scale_data_transform(df_original_train, log_transform=False)
-        df_scaled_test, _ = scale_data_transform(df_original_test, training_scalers=training_scalers, log_transform=False)
-        df_scaled_hold_out, _ = scale_data_transform(df_original_hold_out, training_scalers=training_scalers, log_transform=False)
+        sorted_splits = sorted(
+            data_split.items(), 
+            key=lambda x: (x[0] != "train_valid", x[0])
+            )
 
-        path_train = f"/workspace/data/raw_extracted_xml_data/train_xml_data/Aggregated_{atlas}_bat_corr.csv"
-        df_scaled_train.to_csv(path_train)
-        path_test = f"/workspace/data/raw_extracted_xml_data/test_xml_data/Aggregated_{atlas}_bat_corr.csv"
-        df_scaled_test.to_csv(path_test)
-        path_hold_out = f"/workspace/data/raw_extracted_xml_data/hold_out_xml_data/Aggregated_{atlas}_bat_corr.csv"
-        df_scaled_hold_out.to_csv(path_hold_out)
+        for run_name, metadata in sorted_splits.items():
+            df_original_sub = df_original[metadata["Filename"]]
 
-    return df_scaled_train, df_scaled_test 
+            if run_name == "train_valid":
+            # Scale the training data and transform the testing data with the fitted scalers
+                df_scaled, training_scalers = scale_data_transform(df_original_sub, log_transform=False)
+                scalers = training_scalers
+            elif run_name != "train_valid" and scalers is not None: 
+                df_scaled, _ = scale_data_transform(df_original_sub, training_scalers=scalers, log_transform=False)
+
+            save_path = f"{data_dir}/raw_data_{run_name}/{atlas}_data_bat_corr.csv"
+            df_scaled.to_csv(save_path)
+    return 
+
+# ======================================================================================================================================================
 
 
 # This function is integrated with the below resampling functions. It loads and scales all the data from the specified atlases and metadata. 
@@ -1172,6 +1021,8 @@ def no_resample(
         df_original.to_csv(path)
 
     return rois, scalers
+
+# ======================================================================================================================================================
 
 
 # This function is tailored to plot the batch corrected results after transforming the data with batch_corrected_preprocessing()

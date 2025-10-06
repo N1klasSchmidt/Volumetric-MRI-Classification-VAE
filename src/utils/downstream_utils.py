@@ -15,6 +15,8 @@ import logging
 from pathlib import Path
 import itertools
 import copy
+import pickle
+import matplotlib.colors as mcolors
 
 from models.aggr_VAE import NewVAE
 from models.aggr_VAE_no_XCov import NewVAE_no_XCov
@@ -598,11 +600,13 @@ def predict_unseen_risk_from_latent_rf(
     current_diagnoses = clinical_data["Diagnosis"].unique().tolist()
 
     total_data = pd.concat([latent_data, clinical_data["Diagnosis"]], axis=1)
+    total_data.to_csv(f"{save_path}/RF_total_input_data.csv")
 
     X = total_data.drop('Diagnosis', axis=1)
     y = total_data['Diagnosis']
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+    X_test.to_csv(f"{save_path}/RF_total_test_data.csv")
 
     model = RandomForestClassifier(n_estimators=100, random_state=42)
     model.fit(X_train, y_train)
@@ -613,6 +617,7 @@ def predict_unseen_risk_from_latent_rf(
     probabilities_df = pd.DataFrame(probabilities, columns=current_diagnoses)
     probabilities_df.index = X_test.index
     patients_with_probabilities = pd.concat([total_data.loc[X_test.index], probabilities_df], axis=1)
+    patients_with_probabilities.to_csv(f"{save_path}/RF_probabilities.csv")
 
     # Create figure with three subplots
     fig, axes = plt.subplots(1, 3, figsize=(12, 5))
@@ -647,6 +652,132 @@ def predict_unseen_risk_from_latent_rf(
     plt.savefig(f"{save_path}/{target}_risk_comparison_RF.png")
     plt.savefig(f"{save_path}/{target}_risk_comparison_RF.svg")
 
+    # Fit a model to predict the output probabilities for each class to confirm clinical relevance!
+    predict_rf_from_clinical(patients_with_probabilities, clinical_data, current_diagnoses, save_path) 
+    return
+
+# Train a simple linear model to predict the output probabilities of a random forest model using continuous clinical variables.
+def predict_rf_from_clinical(
+        # Data frame with output probabilities of random forest model for each diagnostic class
+        probabilities: pd.DataFrame, 
+        # Data frame with clinical information
+        clinical: pd.DataFrame, 
+        # List of diagnoses predicted by random forest model
+        diagnoses: List, 
+        # Path to save the generated figures by plot_log_pvalues_and_coefficitients_diverging()
+        save_path: str
+        ):
+
+    for target_var in diagnoses:
+        if target_var in clinical.columns.to_list(): 
+            clinical.drop(columns=[target_var], inplace=True)
+
+        rf_target_prob = probabilities[[target_var, "Diagnosis"]]
+        rf_test_samples = probabilities.index.to_list()
+
+        rf_test_clinical = clinical.loc[rf_test_samples, :]
+        rf_merged_data = pd.concat([rf_test_clinical, rf_target_prob[target_var]], axis=1)
+
+        for clinical_var in ["Olanzapin", "ncrs_total", "bprs_total", "gaf_score", "nss_total", "panss_total"]: 
+            if not clinical_var in rf_merged_data.columns.to_list():
+                logging.info(f"Unable to perform prediction of RF output using clinical, because at least {clinical_var} not found in data. Please adjust variable selection here.")
+                return
+
+        rf_merged_data_basic = rf_merged_data[["Age", "Olanzapin", "ncrs_total", "bprs_total", "gaf_score", "nss_total", "panss_total", target_var]]
+        num_joined_df = rf_merged_data_basic.select_dtypes(include=np.number).copy()
+
+        num_joined_df.dropna(inplace=True)
+
+        X = num_joined_df.drop(columns=[target_var])
+        y = num_joined_df[target_var]
+
+        formula = f"{target_var} ~ 1"
+
+        for term in X.columns:
+            formula += f" + {term}"
+
+        data_all = pd.concat([X, y], axis = 1)
+
+        final_model = smf.ols(formula=formula, data=data_all).fit()
+        final_model.summary()
+
+        # Generate and save the new visualization
+        fig_diverging = plot_log_pvalues_and_coefficients_diverging(final_model, target_var, save_path)
+    return
+
+# Plot that shows the statistical significance as bar lengths (-log10[p]), with bar color and intensity showing the magnitude and direction
+# of the coefficient value of each variable in the linear model
+def plot_log_pvalues_and_coefficients_diverging(
+        # Fit model for which the coefficients should be plotted
+        model, 
+        # Target variable that the model was fit to predict
+        target_var: str, 
+        # Path to save the plots
+        save_path: str,
+        # Figure size
+        figsize=(8, 6),
+        ):
+
+    p_values = model.pvalues.iloc[1:]
+    coeffs = model.params.iloc[1:]
+    
+    results_df = pd.DataFrame({
+        'P-Value': p_values,
+        'Coefficient': coeffs
+    })
+    
+    results_df['-log10(P-Value)'] = -np.log10(results_df['P-Value'] + 1e-10)
+    results_df = results_df.sort_values('-log10(P-Value)', ascending=True)
+    
+    # --- Color Mapping Logic ---
+    # 1. Set up the diverging color normalization
+    # We center the normalization at 0.
+    max_abs_coef = results_df['Coefficient'].abs().max()
+    norm = mcolors.TwoSlopeNorm(vcenter=0, vmin=-max_abs_coef, vmax=max_abs_coef)
+    
+    # 2. Choose the colormap. We use '_r' for "reversed" so positive is red.
+    cmap = plt.get_cmap('bwr')
+    
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    y_pos = np.arange(len(results_df))
+    
+    # 3. Create the bar plot, passing the normalized coefficients to the colormap
+    bars = ax.barh(y_pos, results_df['-log10(P-Value)'], 
+                   color=cmap(norm(results_df['Coefficient'])),
+                   alpha=0.9, edgecolor="black", linewidth=1)
+    
+    # Add text labels (changed to black for better contrast on yellow)
+    for i, (idx, row) in enumerate(results_df.iterrows()):
+        ax.text(0.1, i, f"Coef: {round(row['Coefficient'], 4)}", 
+                va='center', ha='left', fontsize=9, color='black')
+
+    # Add the significance threshold line
+    significance_threshold = -np.log10(0.05)
+    ax.axvline(x=significance_threshold, color='gray', linestyle='--', linewidth=1.5, 
+                label=f'p = 0.05')
+    
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(results_df.index)
+    ax.set_xlabel('-log₁₀(P-Value)', fontsize=12)
+    ax.set_title('Predictor Significance and Direction', fontsize=14)
+    ax.legend(loc='lower right')
+    
+    # --- Add the Colorbar ---
+    # 4. Create a ScalarMappable to generate the colorbar
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([]) # You have to set a dummy array for it to work
+    cbar = fig.colorbar(sm, ax=ax, orientation='vertical', pad=0.03, shrink=0.7)
+    cbar.set_label('Coefficient Value', rotation=270, labelpad=15, fontsize=11)
+    
+    ax.grid(axis='x', alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f"{save_path}/CTT_risk_log_pvalue_{target_var}.svg")
+    plt.savefig(f"{save_path}/CTT_risk_log_pvalue_{target_var}.png")
+    plt.close()
+
+    return 
+
 
 # Predict clinical variables using the latent space features. This is the approach used by Yamaguchi et al.
 # In a five fold CV process a ridge regression / LASSO model is fit to the within bag data and prediction on the OOB. 
@@ -670,6 +801,7 @@ def predict_clinical_from_latent(
     results = {}
     resuls_selected_features = {}
     results_coeff = {}
+    results_detailed = {}
 
     sorted_clinical = clinical.sort_index().drop(columns=['Dataset', 'Diagnosis', 'Sex',])
     sorted_clinical_num = sorted_clinical.select_dtypes(include=np.number)
@@ -681,6 +813,8 @@ def predict_clinical_from_latent(
         y_preds = []
         y_tests = []
         selected_features = []
+
+        fold_metrics = {'r2': [], 'rmse': [], 'baseline_rmse': []}  # Save the metrics per fold
 
         for i, (train_indices, test_indices) in enumerate(kf.split(sorted_latent)):
 
@@ -717,6 +851,16 @@ def predict_clinical_from_latent(
 
             y_preds.extend(y_pred)
 
+            # Save per-fold metrics to compute additional tests (see below)
+            fold_r2 = r2_score(y_test, y_pred)
+            fold_rmse = np.sqrt(np.mean((y_pred - y_test)**2))
+            baseline_pred = np.full_like(y_test, y_train.mean())
+            baseline_rmse = np.sqrt(np.mean((baseline_pred - y_test)**2))
+            
+            fold_metrics['r2'].append(fold_r2)
+            fold_metrics['rmse'].append(fold_rmse)
+            fold_metrics['baseline_rmse'].append(baseline_rmse)
+
         y_preds_np = np.array(y_preds)
         y_tests_np = np.array(y_tests)
 
@@ -728,15 +872,36 @@ def predict_clinical_from_latent(
         r2 = r2_score(y_tests_np, y_preds_np)
 
         n = len(y_tests_np)
-        k = sorted_latent.shape[1]
-        f_stat = (r2/(1-r2))*((n-k-1)/k)
+        k_ = sorted_latent.shape[1]
+        f_stat = (r2/(1-r2))*((n-k-1)/k_)
 
-        dfN = k  # degrees of freedom in the numerator
-        dfD = n - k - 1 # degrees of freedom in the denominator
+        dfN = k_  # degrees of freedom in the numerator
+        dfD = n - k_ - 1 # degrees of freedom in the denominator
 
         pVal = f.sf(f_stat, dfN, dfD)
 
         results[target] = {"f_stat": f_stat, "p_val": pVal}
+
+        # Run additional significance tests
+        sig_results = additional_significance_tests(
+            X=sorted_latent.values,
+            y_preds=y_preds_np,
+            y_tests=y_tests_np,
+            fold_metrics=fold_metrics
+        )
+
+        results_detailed[target] = {        
+            'fold_r2_scores': fold_metrics['r2'],
+            'fold_rmse_scores': fold_metrics['rmse'],
+            'fold_baseline_rmse': fold_metrics['baseline_rmse'],
+            "fold_cv_p": sig_results['cv_comparison']['p_value'],
+            }
+
+        # Add to results dictionary
+        results[target].update({
+            'cv_comparison_p': sig_results['cv_comparison']['p_value'],
+            'adj_r2': sig_results['adjusted_r2']['adj_r2'],
+        })
 
         if pVal <= 0.05:
             logging.info(f"P-value for {target}: {pVal}")
@@ -770,10 +935,129 @@ def predict_clinical_from_latent(
             plt.savefig(f"{save_path}/predict_{target}_from_latent.png")
             plt.savefig(f"{save_path}/predict_{target}_from_latent.svg")
 
+    with open(f"{save_path}/clinical_from_latent.pkl", "wb") as file:
+        pickle.dump(results_detailed, file)
+    
+    plot_model_vs_null(results_detailed, save_path=save_path)
 
     results_df = pd.DataFrame.from_dict(results)
     return results_df, resuls_selected_features, results_coeff
 
+
+def additional_significance_tests(
+    # Full feature matrix (sorted_latent)
+    X: np.ndarray,
+    # Cross-validated predictions
+    y_preds: np.ndarray,
+    # True test values from CV
+    y_tests: np.ndarray,
+    # Pre computed metrics per fold
+    fold_metrics: Dict,
+    # Random seed
+    random_state: int = 42,
+    ) -> Dict:
+    
+    np.random.seed(random_state)
+    results = {}
+    
+    r2_obs = r2_score(y_tests, y_preds)
+    rmse_obs = np.sqrt(np.mean((y_preds - y_tests)**2))
+    n = len(y_tests)
+    p = X.shape[1]
+    
+    print("Computing fold-wise metrics...")
+    
+    # Use pre-computed fold metrics if provided
+    if fold_metrics is not None:
+        fold_r2_scores = fold_metrics['r2']
+        fold_rmse_scores = fold_metrics['rmse']
+        fold_baseline_rmse = fold_metrics['baseline_rmse']
+    
+    # Paired t-test comparing model RMSE vs baseline RMSE (only if we have valid folds)
+    from scipy.stats import ttest_rel
+    if len(fold_rmse_scores) >= 2:
+        t_stat, p_val_cv = ttest_rel(fold_rmse_scores, fold_baseline_rmse)
+    else:
+        t_stat, p_val_cv = np.nan, np.nan
+    
+    results['cv_comparison'] = {
+        'p_value': p_val_cv,
+        'mean_r2': np.mean(fold_r2_scores),
+        'std_r2': np.std(fold_r2_scores),
+        'mean_rmse': np.mean(fold_rmse_scores),
+        'mean_baseline_rmse': np.mean(fold_baseline_rmse),
+        'rmse_improvement': np.mean(fold_baseline_rmse) - np.mean(fold_rmse_scores),
+    }
+    
+    print("Computing adjusted R²...")
+    adj_r2 = 1 - (1 - r2_obs) * (n - 1) / (n - p - 1)
+    
+    results['adjusted_r2'] = {
+        'r2': r2_obs,
+        'adj_r2': adj_r2,
+        'n_samples': n,
+        'n_features': p
+    }
+    
+    return results
+
+
+def plot_model_vs_null(
+        # Dictionary generated by additional_significance_tests().
+        clinical_from_latent_results: Dict,
+        # Path to save the generated plot
+        save_path: str, 
+        ):
+    
+    significant_vars = {var: data for var, data in clinical_from_latent_results.items() 
+                   if data["fold_cv_p"] < 0.1 and not str(var).startswith("bis") and var != "ncrs_motor"}
+
+    n_vars = len(significant_vars)
+    fig, axes = plt.subplots(1, n_vars, figsize=(2 * n_vars, 4), sharey=False)
+    axes = axes.flatten() if n_vars > 1 else [axes]
+
+    for idx, (var, data) in enumerate(significant_vars.items()):
+        ax = axes[idx]
+        
+        # Plot as vertical strips
+        ax.scatter(y=data["fold_rmse_scores"], x=[0]*len(data["fold_rmse_scores"]), 
+                c="darkorange", alpha=0.6, s=100)
+        ax.scatter(y=data["fold_baseline_rmse"], x=[1]*len(data["fold_baseline_rmse"]), 
+                c="red", alpha=0.6, s=100)
+        
+        # Means
+        mean_model = np.mean(data["fold_rmse_scores"])
+        mean_null = np.mean(data["fold_baseline_rmse"])
+        
+        ax.scatter(y=mean_model, x=0, c="darkorange", s=120, 
+                marker='D', edgecolors='black', linewidths=1, zorder=5)
+        ax.scatter(y=mean_null, x=1, c="red", s=120, 
+                marker='D', edgecolors='black', linewidths=1, zorder=5)
+        
+        ax.axhline(mean_model, color='darkorange', linestyle='--', alpha=0.3, linewidth=2)
+        ax.axhline(mean_null, color='red', linestyle='--', alpha=0.3, linewidth=2)
+        
+        # Significance
+        p_val = data.get("cv_comparison_p", data.get("p_val", 1.0))
+        if p_val <= 0.05:
+            ax.text(0.5, mean_model, '*', fontsize=24, ha='center', va='center')
+        elif p_val <= 0.1:
+            ax.text(0.5, mean_model, '+', fontsize=24, ha='center', va='center')
+        
+        # Formatting
+        ax.set_title(f'{var}\np={round(data["fold_cv_p"], 4)}', fontsize=11, fontweight='bold')
+        if idx == 0:
+            ax.set_ylabel('RMSE', fontsize=11)
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(['Model', 'Null'], fontsize=10)
+        ax.set_xlim(-0.5, 1.5)
+        ax.grid(True, alpha=0.3, axis='y')
+
+    plt.tight_layout()
+    plt.savefig(f"{save_path}/all_data_clinical_from_latent.svg")
+    plt.savefig(f"{save_path}/all_data_clinical_from_latent.png")
+    plt.close()
+    return
 
 # Use with a trained hold_out_model predictor to determine via Saliency which ROIs are linked to which latent features
 # This is different from Section 2 "Trace to Latent", which simply does an indirect assignment. This function propagates
@@ -1357,21 +1641,43 @@ def get_saliency_df_weighted(
     saliency_df_scaled = saliency_df_atlas.drop(columns=[0, "vol_type", "points"])
 
     # Finally sum over the weighted vol type saliencies
+    # subset_saliency_dfs = []
+
+    # for volume in volumes: 
+    #     keep_sal_index_vol = [i for i in saliency_df_scaled.index if i.endswith(volume)]
+    #     saliency_df_scaled_vol= saliency_df_scaled.loc[keep_sal_index_vol,:]
+    #     subset_saliency_dfs.append(saliency_df_scaled_vol)
+
+    # saliency_df = pd.concat(subset_saliency_dfs, axis=1)
+    # saliency_df["Total_Saliency"] = saliency_df.sum(axis=1)
+    # saliency_df = saliency_df.copy()[["Total_Saliency"]]
+
+    # saliency_df_index_clean = [i.split("^")[1] for i in saliency_df.index.to_list()]
+    # saliency_df.index = saliency_df_index_clean
+    # saliency_df.index.rename("ROI_Name", inplace=True)
+    # saliency_df.reset_index(inplace=True)
+
     subset_saliency_dfs = []
 
     for volume in volumes: 
         keep_sal_index_vol = [i for i in saliency_df_scaled.index if i.endswith(volume)]
-        saliency_df_scaled_vol= saliency_df_scaled.loc[keep_sal_index_vol,:]
+        saliency_df_scaled_vol = saliency_df_scaled.loc[keep_sal_index_vol,:].copy()
+        
+        # Clean the index to remove volume suffix BEFORE concatenating
+        saliency_df_scaled_vol.index = [i.rsplit("^", 1)[0] for i in saliency_df_scaled_vol.index]
         subset_saliency_dfs.append(saliency_df_scaled_vol)
 
-    saliency_df = pd.concat(subset_saliency_dfs, axis=1)
-    saliency_df["Total_Saliency"] = saliency_df.sum(axis=1)
-    saliency_df = saliency_df.copy()[["Total_Saliency"]]
+    # Now concat with matching indices and sum
+    saliency_df = pd.concat(subset_saliency_dfs, axis=0)
+    saliency_df = saliency_df.groupby(saliency_df.index).sum()  # Sum rows with same index
+    saliency_df.columns = ["Total_Saliency"]
 
+    # Clean up the index
     saliency_df_index_clean = [i.split("^")[1] for i in saliency_df.index.to_list()]
     saliency_df.index = saliency_df_index_clean
     saliency_df.index.rename("ROI_Name", inplace=True)
     saliency_df.reset_index(inplace=True)
+
     return saliency_df
 
 
@@ -1390,7 +1696,7 @@ def visualize_saliency(
     atlas_mapping = {"neuromorphometrics": {
         "abbrev": "[N]",
         "atlas_nifti_path": "/workspace/data/nifti/neuromorphometrics/neuromorphometrics.nii",
-        "atlas_labels_path": "/workspace/data/nifti/neuromorphometrics/1103_3_glm_LabelMap.xml",}
+        "atlas_labels_path": "/workspace/data/nifti/neuromorphometrics/CLEAN_1103_3_glm_LabelMap_fixed.xml",}
                      }
 
     if method == "weighted": 
