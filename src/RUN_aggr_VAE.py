@@ -59,8 +59,8 @@ from utils.downstream_utils import (
 # ====================================================================================================
 # **RUN Aggregated VAE model with Expeiment Config Parameters**
 #
-# This is the central script for running different training iterations. Through the parameters at the
-# beginning of the script the run parameters can be adjusted  
+# This is the central script for running different experiments. It takes the experiment and model 
+# configs and handles them accordingly. A 
 # ====================================================================================================
 
 
@@ -141,7 +141,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
             PLOTTING_COLORS=diagnosis_colors_plotting,
             # Data Parameters
             BATCH_SIZE=model_config["model_parameters"]["batch_size"],
-            DIAGNOSES=experiment_config["data"]["diagnoses"],   ################################################ THIS MIGHT BE A PROBLEM! INCLUDES ALL! 
+            DIAGNOSES=experiment_config["data"]["diagnoses"], #This is just a placeholder. It is overwritten for training and testing.
             COVARS=experiment_config["model"]["covariate_names"],
             # Misc.
             LATENT_DIM=10, ##################################################### PLACEHOLDER, REMOVE

@@ -19,6 +19,7 @@ import matplotlib.pyplot as plt
 import xml.etree.ElementTree as ET
 import hashlib
 
+
 # ====================================================================================================
 # **HELPER FUNCTIONS**
 #   
@@ -38,7 +39,6 @@ import hashlib
 
 # Get a hash of the current PyTorch model. This is useful to validate that the model saved at one point is the same at a later stage.
 def get_model_hash(model):
-    """Get hash of model parameters"""
     hasher = hashlib.sha256()
     for param in model.parameters():
         hasher.update(param.data.cpu().numpy().tobytes())
@@ -329,6 +329,37 @@ def split_annotations(
     return first, second
 
 
+# This function splits a list of subjects into training and validation lists according to two dataframes containing training and validation annotations.
+# While called train_ann, and val_ann, any dataframes can be used to guide the splitting of subjects.
+def split_subjects(
+    # The list of patients that should be split according to the prior train_val_split
+    subjects: List[dict], 
+    # Training annotations. 
+    train_ann: pd.DataFrame, 
+    # Validation annotations.
+    val_ann: pd.DataFrame
+) -> Tuple[List, List]:
+    
+    train_files = list(train_ann["Filename"])
+    valid_files = list(val_ann["Filename"])
+
+    train_subjects = []
+    valid_subjects = []
+
+    for subject in subjects:
+
+        if subject["name"] in train_files:
+            train_subjects.append(subject)
+
+        elif subject["name"] in valid_files:
+            valid_subjects.append(subject)
+            
+        else: 
+            print(f"Filename {subject['name']} not found in annotations.")
+
+    return train_subjects, valid_subjects
+
+
 # This function takes the existing model metrics as a DataFrame and the metrics of the current epoch as a list of dictionaries.
 # Each dictionary can contain metrics for multiple losses, e.g. {"valid_loss": 0.5, "v_recon_loss": 0.3, "v_kldiv_loss": 0.2}.
 # It then updates the data frame with the new metrics and returns it.
@@ -556,13 +587,20 @@ def scale_and_save_corrected_data(
 
 # This function is integrated with the below resampling functions. It loads and scales all the data from the specified atlases and metadata. 
 # The Scaler is fit to the training data and applied to the validation and testing data. 
-def load_all_data(atlas_map: Dict,
-                  metadata_df: pd.DataFrame,
-                  save_dir: str,
-                  train_scalers_atlases: Dict = None,
-                  batch_corr_ext: str = "",
-                  data_type: str = "csv"
-                  ):
+def load_all_data(
+        # Mapping of atlas names to convenient abbreviations
+        atlas_map: Dict,
+        # Data frame with metadata of all files that should be loaded
+        metadata_df: pd.DataFrame,
+        # Directory where data is saved
+        save_dir: str,
+        # Dictionary of per-atlas and measurement-type scalers, fit on training data. If None new scalers are fit, otherwise scalers are applied.
+        train_scalers_atlases: Dict = None,
+        # In the case of batch correction, the raw unsampled data has a different extension
+        batch_corr_ext: str = "",
+        # Type of data that is being loaded
+        data_type: str = "csv"
+        ) -> Tuple[pd.DataFrame, Dict]:
     
     joined_df = None
 
@@ -578,7 +616,7 @@ def load_all_data(atlas_map: Dict,
 
         mtypes = atlas_data_df.index.str.split('^').str.get(-1).unique()
 
-        # We scale each of the atlases separately. We perform the scaling BEFORE the over sampling to ensure that each of the features has an equal effect on the generation of new samples.
+        # We scale each of the atlases separately. We perform the scaling BEFORE the sampling to ensure that each of the features has an equal effect on the generation of new samples.
         if len(batch_corr_ext) == 0: # Batch corrected data has already been scaled! 
             # The training data gets scaled normally. We save the scaler. The validation data should be scaled with the values from the train scaling! 
             if train_scalers_atlases is None:
@@ -592,12 +630,7 @@ def load_all_data(atlas_map: Dict,
                 atlas_data_df, _ = scale_data_transform(atlas_data_df, mtypes, training_scalers=train_scalers)
 
         prefix = f"{atlas_abbrev}^"
-
-        # We convert the mutli-index to a single index adding the volume type to the row name instead
         atlas_data_df.index = atlas_data_df.index.map(lambda x: f"{prefix}{x}")
-        #atlas_data_df.index.name = 'Feature_Combined'
-
-        #atlas_data_df.index = atlas_data_df.index.str.replace('_', '^')
 
         if joined_df is None:
             joined_df = atlas_data_df
@@ -609,18 +642,26 @@ def load_all_data(atlas_map: Dict,
 # This function performs oversampling of the training data. By specifying which files should and shoulnd't be oversampled the train-validation split can be considered. 
 # The oversampled data is saved to the training data directory. Three methods of oversampling have been integrated: SMOTE, ADASYN and Random. Further information can be 
 # found under: https://imbalanced-learn.org/stable/over_sampling.html 
-def oversample(files_to_oversample: pd.DataFrame,
-               files_not_to_oversample: pd.DataFrame = None, 
-               method: str = "ADASYN",
-               save_dir: str = "/workspace/data/raw_extracted_xml_data/train_xml_data",
-               batch_corr_ext: str = "",
-               atlas_map = {"cobra": "[C]",
-                            "lpba40": "[L]",
-                            "neuromorphometrics": "[N]",
-                            "suit": "[S]",
-                            },
-                data_type: str = "csv",
-               ) -> pd.DataFrame:
+def oversample(
+        # Subset of entire metadata that should be oversampled. This is usually the training split.
+        files_to_oversample: pd.DataFrame,
+        # Subset of entire metadata that shouln't be oversampled, BUT should be saved together with the resampled files. Usually the validation split.
+        files_not_to_oversample: pd.DataFrame = None, 
+        # Method to be used for oversampling. Choice between SMOTE, ADASYN, Random and SMOTENC
+        method: str = "ADASYN",
+        # Path to save the oversampled data
+        save_dir: str = "/workspace/data/raw_extracted_xml_data/train_xml_data",
+        # In the case of batch correction, the raw unsampled data has a different extension
+        batch_corr_ext: str = "",
+        # Mapping of atlas names to convenient abbreviations
+        atlas_map = {"cobra": "[C]",
+                    "lpba40": "[L]",
+                    "neuromorphometrics": "[N]",
+                    "suit": "[S]",
+                    },
+        # Type of data that is being loaded
+        data_type: str = "csv",
+        ) -> Tuple[pd.DataFrame, List, Dict]:
     
     # Step 1: Create a merged dataframe of the stacked volume measurements across all atlases. Normalize and Scale
     logging.info("Step: Scaling and merging all data")
@@ -629,15 +670,24 @@ def oversample(files_to_oversample: pd.DataFrame,
     joined_df, scalers = load_all_data(atlas_map, files_to_oversample, save_dir, batch_corr_ext=batch_corr_ext, data_type=data_type)  # scalers is a dictionary with the structure: {atlas: {measurment_type:StandardScaler}}
     rois = joined_df.index.to_list()
 
+    joined_df_t = joined_df.T
+    joined_df_t.index.name = "Filename"
+    joined_df_t = joined_df_t.reset_index()
+
     if files_not_to_oversample is not None:
         files_not_to_oversample = files_not_to_oversample[["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]]
         joined_df_rest, _ = load_all_data(atlas_map, files_not_to_oversample, save_dir, train_scalers_atlases=scalers, batch_corr_ext=batch_corr_ext, data_type=data_type)
-        original_rest_data = pd.merge(joined_df_rest.T, files_not_to_oversample, on="Filename", how="left")
-        original_rest_data = original_rest_data.drop(columns=["Age", "Sex", "Sex_int"]).set_index("Filename")
+        
+        joined_df_rest_t = joined_df_rest.T
+        joined_df_rest_t.index.name = "Filename"
+        joined_df_rest_t = joined_df_rest_t.reset_index()
+        
+        non_oversampled_data = pd.merge(joined_df_rest_t, files_not_to_oversample, on="Filename", how="left")
+        non_oversampled_data = non_oversampled_data.drop(columns=["Age", "Sex", "Sex_int"]).set_index("Filename")
 
     # Step 2: One-Hot encode the dataset variable, to allow assigning after oversampling
     logging.info("Step: One-hot encoding the Dataset variable")
-    original_data = pd.merge(joined_df.T, files_to_oversample, on="Filename", how="left")  # Transpose as we need the columns to contain the features (ROIs)
+    original_data = pd.merge(joined_df_t, files_to_oversample, on="Filename", how="left")  # Transpose as we need the columns to contain the features (ROIs)
     
     if method != "SMOTENC":
         original_data_onehot = pd.get_dummies(original_data, columns=["Dataset"], prefix=None).drop(columns=["Age", "Sex", "Sex_int"])
@@ -716,7 +766,7 @@ def oversample(files_to_oversample: pd.DataFrame,
     # Step 5: Convert the oversampled data back into a per-atlas format to be seamlessly integrated with the rest of the pipeline
     logging.info("Step: Returning data to original per-atlas format")
 
-    total_df = pd.concat([final_oversampled_df, original_rest_data])
+    total_df = pd.concat([final_oversampled_df, non_oversampled_data])
     intermediate_df = total_df.drop(columns=metadata_to_keep+["Sample_status"]).T
 
     for atlas, abbrev in atlas_map.items():
@@ -732,18 +782,26 @@ def oversample(files_to_oversample: pd.DataFrame,
 # This function performs undersampling of the training data. By specifying which files should and shoulnd't be undersampled the train-validation split can be considered. 
 # The undersampled data is saved to the training data directory. Four methods of undersampling have been integrated: All-KNN, NearMiss2, Tomek Links and Random. Further information can be 
 # found under: https://imbalanced-learn.org/stable/under_sampling.html
-def undersample(files_to_undersample: pd.DataFrame,
-               files_not_to_undersample: pd.DataFrame = None, 
-               method: str = "random",
-               save_dir: str = "/workspace/data/raw_extracted_xml_data/train_xml_data",
-               batch_corr_ext: str = "",
-               atlas_map = {"cobra": "[C]",
-                            "lpba40": "[L]",
-                            "neuromorphometrics": "[N]",
-                            "suit": "[S]",
-                            },
-                data_type: str = "csv",
-               ) -> pd.DataFrame:
+def undersample(
+        # Subset of entire metadata that should be undersampled. This is usually the training split.
+        files_to_undersample: pd.DataFrame,
+        # Subset of entire metadata that shouln't be undersampled, BUT should be saved together with the resampled files. Usually the validation split.
+        files_not_to_undersample: pd.DataFrame = None, 
+        # Method to use for undersampling. Choice between AllKNN, NearMiss2, TomekLinks and Random
+        method: str = "random",
+        # Path to save the undersampled data
+        save_dir: str = "/workspace/data/raw_extracted_xml_data/train_xml_data",
+        # In the case of batch correction, the raw unsampled data has a different extension
+        batch_corr_ext: str = "",
+        # Mapping of atlas names to convenient abbreviations
+        atlas_map = {"cobra": "[C]",
+                    "lpba40": "[L]",
+                    "neuromorphometrics": "[N]",
+                    "suit": "[S]",
+                    },
+        # Type of data that is being loaded
+        data_type: str = "csv",
+        ) -> Tuple[pd.DataFrame, List, Dict]:
     
     # Step 1: Create a merged dataframe of the stacked volume measurements across all atlases. Normalize and Scale
     logging.info("Step: Merging and scaling all data")
@@ -752,14 +810,21 @@ def undersample(files_to_undersample: pd.DataFrame,
     joined_df, scalers = load_all_data(atlas_map, files_to_undersample, save_dir, batch_corr_ext=batch_corr_ext, data_type=data_type)
     rois = joined_df.index.to_list()
 
+    joined_df_t = joined_df.T
+    joined_df_t.index.name = "Filename"
+    joined_df_t = joined_df_t.reset_index()
+
     if files_not_to_undersample is not None:
         files_not_to_undersample = files_not_to_undersample[["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]]
         joined_df_rest, _ = load_all_data(atlas_map, files_not_to_undersample, save_dir, train_scalers_atlases=scalers, batch_corr_ext=batch_corr_ext, data_type=data_type)
-        original_rest_data = pd.merge(joined_df_rest.T, files_not_to_undersample, on="Filename", how="left")
-        original_rest_data = original_rest_data.drop(columns=["Age", "Sex", "Sex_int"]).set_index("Filename")
+        
+        joined_df_rest_t = joined_df_rest.T
+        joined_df_rest_t.index.name = "Filename"
+        joined_df_rest_t = joined_df_rest_t.reset_index()
 
-    to_be_undersampled_data = pd.merge(joined_df.T, files_to_undersample, on="Filename", how="inner")  # Transpose as we need the columns to contain the features (ROIs)
-    non_undersampled_data = pd.merge(joined_df_rest.T, files_not_to_undersample, on="Filename", how="left")
+        non_undersampled_data = pd.merge(joined_df_rest_t, files_not_to_undersample, on="Filename", how="left")
+
+    to_be_undersampled_data = pd.merge(joined_df_t, files_to_undersample, on="Filename", how="inner")  # Transpose as we need the columns to contain the features (ROIs)
     
     X = to_be_undersampled_data.drop(columns=["Age", "Sex", "Sex_int", "Diagnosis", "Dataset"]).set_index("Filename")
     y = to_be_undersampled_data["Diagnosis"]
@@ -815,25 +880,31 @@ def undersample(files_to_undersample: pd.DataFrame,
 # This function performs a hybrid resampling = combination of over- and under sampling. The majority class is under sampled, while the minority class is
 # over sampled to the level of the target class (here SCHZ). There exist also pre-implemented version from sklearn (https://imbalanced-learn.org/stable/combine.html),
 # yet this combination of Random under sampling and ADASYN over sampling has proven to be most effective.
-def hybrid_sample(files_to_resample: pd.DataFrame,
-               files_not_to_resample: pd.DataFrame = None,
-               class_props: Dict = {"majority": "HC",
-                                    "target": "SCHZ",
-                                    "minority": "MDD"},
-               save_dir: str = "/workspace/data/raw_data_train_valid",
-               batch_corr_ext: str = "",
-               atlas_map = {"cobra": "[C]",
-                            "lpba40": "[L]",
-                            "neuromorphometrics": "[N]",
-                            "suit": "[S]",
-                            },
-                data_type: str = "csv",
-               ) -> pd.DataFrame:
+def hybrid_sample(
+        # Subset of entire metadata that should be resampled. This is usually the training split.
+        files_to_resample: pd.DataFrame,
+        # Subset of entire metadata that shouln't be resampled, BUT should be saved together with the resampled files. Usually the validation split.
+        files_not_to_resample: pd.DataFrame = None,
+        # Class properties, specifying to what level the balancing should be performed.
+        class_props: Dict = {"majority": "HC",
+                            "target": "SCHZ",
+                            "minority": "MDD"},
+        # Path to save the resampled data 
+        save_dir: str = "/workspace/data/raw_data_train_valid",
+        # In the case of batch correction, the raw unsampled data has a different extension
+        batch_corr_ext: str = "",
+        # Mapping of atlas names to convenient abbreviations
+        atlas_map = {"cobra": "[C]",
+                    "lpba40": "[L]",
+                    "neuromorphometrics": "[N]",
+                    "suit": "[S]",
+                    },
+        # Type of data that is being loaded
+        data_type: str = "csv",
+        ) -> Tuple[pd.DataFrame, List, Dict]:
     
     # Step 1: Create a merged dataframe of the stacked volume measurements across all atlases. Normalize and Scale
     logging.info("Step: Merging and scaling all data (unless batch corrected)")
-
-    print(files_to_resample)
 
     files_to_resample = files_to_resample[["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]]
     joined_df, scalers = load_all_data(atlas_map, files_to_resample, save_dir, batch_corr_ext=batch_corr_ext, data_type=data_type)
@@ -953,22 +1024,29 @@ def hybrid_sample(files_to_resample: pd.DataFrame,
 
 # No resampling is performed, only data scaling
 def no_resample(
+        # Training subset of entire metadata
         training_files: pd.DataFrame,
+        # Validation subset of entire metadata
         validation_files: pd.DataFrame,
+        # Path to save the training and validation data
         save_dir: str = "/workspace/data/raw_data_train_valid",
+        # In the case of batch correction, the raw unsampled data has a different extension
         batch_corr_ext: str = "",
+        # Mapping of atlas names to convenient abbreviations
         atlas_map: Dict = {"cobra": "[C]",
                     "lpba40": "[L]",
                     "neuromorphometrics": "[N]",
                     "suit": "[S]",
                     },
-        ) -> pd.DataFrame:
+        # Type of data that is being loaded
+        data_type: str = "csv"
+        ) -> Tuple[pd.DataFrame, List, Dict]:
     
     # Step 1: Create a merged dataframe of the stacked volume measurements across all atlases. Normalize and Scale
     logging.info("Step: Merging and scaling all data (unless batch corrected)")
 
     training_files = training_files[["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]]
-    joined_training_df, scalers = load_all_data(atlas_map, training_files, save_dir, batch_corr_ext=batch_corr_ext)
+    joined_training_df, scalers = load_all_data(atlas_map, training_files, save_dir, batch_corr_ext=batch_corr_ext, data_type=data_type)
     rois = joined_training_df.index.to_list()
 
     joined_training_df_t = joined_training_df.T
@@ -978,7 +1056,7 @@ def no_resample(
     validation_data = None
     if validation_files is not None:
         validation_files = validation_files[["Filename", "Dataset", "Diagnosis" , "Age", "Sex", "Sex_int"]]
-        joined_validation_df, _ = load_all_data(atlas_map, validation_files, save_dir, train_scalers_atlases=scalers, batch_corr_ext=batch_corr_ext)
+        joined_validation_df, _ = load_all_data(atlas_map, validation_files, save_dir, train_scalers_atlases=scalers, batch_corr_ext=batch_corr_ext, data_type=data_type)
         
         joined_validation_df_t = joined_validation_df.T
         joined_validation_df_t.index.name = "Filename"
@@ -998,38 +1076,26 @@ def no_resample(
     else: 
         total_df = training_data.drop(columns=["Dataset", "Diagnosis", "Sample_status"]).T
 
-    atlas_dfs = {}
 
     for atlas, abbrev in atlas_map.items():
         atlas_df = total_df[total_df.index.str.startswith(abbrev)]
-        index_parts = np.array(atlas_df.index.str.split('^', n=2, expand=True).to_list())
-
-        original_multiindex = pd.MultiIndex.from_arrays([
-            index_parts[:,1], 
-            index_parts[:,2]
-        ], names=[None, 'Volume'])
-        
-        df_restored = atlas_df.copy()
-        df_restored.index = original_multiindex
-        df_original = df_restored.unstack('Volume')
-
-        df_original = df_original.astype(float)
-
-        atlas_dfs[atlas] = df_original
+        atlas_df.sort_index(inplace=True)
         path = f"{save_dir}/{atlas}_data{batch_corr_ext}_nors.csv"
         logging.info(f"Step: Saving unsampled / original {atlas} data to: {path}")
-        df_original.to_csv(path)
+        atlas_df.to_csv(path)
 
     return rois, scalers
 
 # ======================================================================================================================================================
 
 
-# This function is tailored to plot the batch corrected results after transforming the data with batch_corrected_preprocessing()
+# This function is tailored to plot the batch corrected results after transforming the data with batch_correct().
+# Requires individual adjustment of colors! 
 def umap_correction(
+        # All batch corrected data
         data: pd.DataFrame, 
+        # Metadata corresponding to data.
         metadata: pd.DataFrame,
-        data_subset: str,
         ): 
     # Combine the data with the metadata
     corrected_data_meta = pd.merge(data.T, metadata, left_index=True, right_index=True)#.drop(columns=["Unnamed: 0", "Usage_original"])
@@ -1120,40 +1186,19 @@ def umap_correction(
                                             markersize=10))
 
         legend1 = ax1.legend(handles=handles_color, loc="upper left", bbox_to_anchor=(1.01, 0.65), frameon=False)
-        plt.savefig(f"UMAP_{color_by}_{data_subset}.png")
-        plt.savefig(f"UMAP_{color_by}_{data_subset}.svg")
+        plt.savefig(f"UMAP_batch_corr_{color_by}.png")
+        plt.savefig(f"UMAP_batch_corr_{color_by}.svg")
     return
 
 
-# The SRBPS dataset can be split into a total of eleven smaller datasets according to the scanner location. Some of these show strong confounding effects. 
-# The grouping is based on a prior plotting of the original scanner locations and clustering them manually. 
-def update_metadata_srbps(metadata_original: pd.DataFrame, srbps_data: pd.DataFrame):
-
-    groups = {"HUHRC": ["HUH", "HRC"], "UTO": ["UTO"], "HCS": ["HKH", "COI", "SWA"], "KITKAT": ["KTT", "CIN", "ATV", "ATT", "KUT"]}
-
-    metadata_original_new_index = metadata_original.set_index("Filename")
-    srbps_files = metadata_original_new_index[metadata_original_new_index["Dataset"] == "SRBPS"].index.to_list()
-    srbps_data_subset = srbps_data.loc[srbps_files,:]
-
-    # Create a copy of metadata to avoid modifying the original
-    metadata = metadata_original_new_index.copy()
-
-    # Map the site information to the Diagnosis column for SRBPS entries
-    # This will only update rows where Dataset == "SRBPS"
-    srbps_mask = metadata_original_new_index["Dataset"] == "SRBPS"
-    metadata.loc[srbps_mask, "Dataset"] = metadata.loc[srbps_mask].index.map(srbps_data_subset["site"])
-
-    for new_dataset_name, old_datasets in groups.items():
-        metadata["Dataset"].replace(old_datasets, new_dataset_name, inplace=True)
-
-    return metadata.reset_index(drop=False)
-
-
 # More general function to plot UMAPs with several different annotations. Primarily used to compute a joined plot across the non-NSS/WC and NSS/WC testing data.
-# Too change the annotations, simply adjust the color_by_list and use_colors_list. 
+# Too change the annotations, simply adjust the color_by_list and use_colors_list individually. 
 def plot_umap(
-        data: pd.DataFrame, 
+        # Data used to compute embeddings. Can contain non-numeric columns, that are specified in drop_cat_cols.
+        data: pd.DataFrame,
+        # List of categorical / non-numeric columns that should be removed from UMAP computation
         drop_cat_cols: List,
+        # Path to save the plot
         save_path: str, 
         ):
     
@@ -1278,15 +1323,23 @@ def plot_umap(
 # In principle this function isn't limited to saliency results. Any data in the form of ROI name : Data within a data frame can be plotted accordingly.
 # Uses the neuroimaging specific packages nibabel (https://nipy.org/nibabel/) and nilearn (https://nilearn.github.io/stable/index.html).
 def plot_brain_with_saliency(
-    atlas_nifti_path,
-    label_map_xml_path,
-    saliency_df,
-    roi_name_col_cleaned,
-    data_col,
-    save_path,
-    vmax=None,
-    cmap='Reds',
-    ): 
+        # Path pointing to .nii file of the desired atlas
+        atlas_nifti_path: str,
+        # Path pointing to .xml file that contains the label map for the specified nifti file 
+        label_map_xml_path: str,
+        # Data frame with ROI names and their corresponding saliency scores. ROI names should match with label map! 
+        saliency_df: pd.DataFrame,
+        # Name of column in saliency_df that contains ROI names
+        roi_name_col_cleaned: str,
+        # Name of column in saliency_df that contains the saliency scores
+        data_col: str,
+        # Path to save the generated plots
+        save_path: str,
+        # Max value that's plotted for saliency
+        vmax=None,
+        # Colormap
+        cmap='Reds',
+        ): 
 
     def normalize_spaces(text):
     #spaces and Unicode-spaces and other non-alphabetical letters in the names of the nifti or xml files should be normalized

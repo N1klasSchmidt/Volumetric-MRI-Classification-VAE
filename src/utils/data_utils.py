@@ -7,54 +7,26 @@ import regex as re
 import numpy as np
 import scanpy as sc
 import torch
-from torch.utils.data import DataLoader
-from sklearn.model_selection import KFold
+from torch.utils.data import DataLoader, Dataset
 import logging
 
-from utils.logging_utils import log_and_print, log_checkpoint, log_title
-from utils.helper_utils import (
-    flatten_array, 
-    scale_data_transform, 
-    combine_dfs, 
-    )
+from utils.logging_utils import log_and_print, log_checkpoint
+from utils.helper_utils import scale_data_transform, combine_dfs
 
 
-
-# This function splits a list of subjects into training and validation lists according to two dataframes containing training and validation annotations.
-# While called train_ann, and val_ann, any dataframes can be used to guide the splitting of subjects.
-def split_subjects(
-    # The list of patients that should be split according to the prior train_val_split
-    subjects: List[dict], 
-    # Training annotations. 
-    train_ann: pd.DataFrame, 
-    # Validation annotations.
-    val_ann: pd.DataFrame
-) -> Tuple[List, List]:
-    
-    train_files = list(train_ann["Filename"])
-    valid_files = list(val_ann["Filename"])
-
-    train_subjects = []
-    valid_subjects = []
-
-    for subject in subjects:
-
-        if subject["name"] in train_files:
-            train_subjects.append(subject)
-
-        elif subject["name"] in valid_files:
-            valid_subjects.append(subject)
-            
-        else: 
-            print(f"Filename {subject['name']} not found in annotations.")
-
-    return train_subjects, valid_subjects
+# ====================================================================================================
+# ** DATA PROCESSING UTILS**
+#
+# Mainly handles loading of data and prcessing into PyTorch compatible data loaders. Additionally handles 
+# data processing during model training, saving the model and extracting the latent space.
+#
+# ====================================================================================================
 
 
-# The following two classes convert the lists of subjects into PyTorch dataloaders.
-
-class CustomDataset():  
-    # Create Datasets that can then be converted into DataLoader objects
+# Create Datasets that can then be converted into DataLoader objects
+# Custom datasets need to inherit from the Dataset class, while having their __len__ and __getitem__ methods overwritten
+# See: https://docs.pytorch.org/tutorials/beginner/data_loading_tutorial.html 
+class CustomDataset(Dataset):  
     def __init__(self, subjects, covars):
         self.subjects = subjects
         self.covars = covars
@@ -96,7 +68,9 @@ def load_mri_data(
     annotations = None,
     # The diagnoses that you want to include in the data loading, defaults to all
     diagnoses = None,
+    # Covariates that should be loaded
     covars = [],
+    # Training data is already scaled, testing data has to be transformed with training scalers 
     train_or_test: str = "train",
     # Should only a specific volume measurement be used? Choose one from Vgm, Vwm, Vcsf.
     vol_to_use: str = None,
@@ -203,8 +177,9 @@ def load_mri_data(
     return list(subjects.values()), data_overview, atlas_lengths
 
 
+# This function takes all subject information and converts it into a PyTorch compatible data loader
 def process_subjects(
-    # The list of tio.Subject objects that you want to process
+    # The list of dictionaries that you want to process, one for each patient
     subjects: List,
     # The batch size for the DataLoader (the larger, the more memory is needed)
     batch_size: int,
@@ -222,6 +197,8 @@ def process_subjects(
 
     # Return the DataLoader object
     return data_loader
+
+# ======================================================================================================================================================
 
 
 # This function processes a latent space representation of mri data in AnnData format. Given a set of annotations, it
@@ -315,69 +292,6 @@ def combine_latent_spaces(
     return cdata
 
 
-# This function loads a model from a checkpoint file if it exists, otherwise it will raise an error.
-# This function needs an overhaul. It should:
-# - load model weights
-# - load an optimizer state
-# - load a scheduler state
-# - load model metrics
-# - and probably load model hyperparamaters
-# Ideally all of this would be loaded from a single file.
-# Also this function probably belongs in the base model file.
-def load_checkpoint_model(model, model_filename: str):
-
-    if os.path.isfile(model_filename):
-        log_and_print(f"Loading checkpoint from '{model_filename}'")
-
-        model_state = torch.load(model_filename)
-        model.load_state_dict(model_state)
-
-        log_and_print(f"Checkpoint loaded successfully")
-
-    else:
-        log_and_print(
-            f"No checkpoint found at '{model_filename}', starting training from scratch"
-        )
-
-        raise FileNotFoundError(f"No checkpoint found at '{model_filename}'")
-
-    return model
-
-
-# This function saves the model to a file.
-# This function needs an overhaul to:
-# - save model weights
-# - save optimizer state
-# - save scheduler state
-# - save model metrics
-# - save model hyperparameters
-# Ideally all of this would be saved in a single file.
-# Also this function probably belongs in the base model file.
-def save_model(model, save_path: str, timestamp: str, descriptor: str, epoch: int):
-    model_save_path = os.path.join(
-        save_path,
-        f"{timestamp}_{descriptor}_e{epoch}_model.pth",
-    )
-
-    torch.save(model.state_dict(), model_save_path)
-
-    log_checkpoint(model_path=model_save_path)
-
-
-# This function saves the model metrics to a csv file.
-# It should probably be combined with the save_model function.
-def save_model_metrics(model_metrics, save_path: str, timestamp: str, descriptor: str):
-    metrics_save_path = os.path.join(
-        save_path,
-        f"{timestamp}_{descriptor}_model_performance.csv",
-    )
-
-    pd.DataFrame(model_metrics).to_csv(metrics_save_path, index=False)
-
-    log_checkpoint(
-        metrics_path=metrics_save_path,
-    )
-
 # Performs the same operations as process_latent_space_2D, but is atlas agnostic.
 def process_latent_space(
     # The AnnData object that contains the latent space representation of the MRI data.
@@ -420,3 +334,62 @@ def process_latent_space(
 
     # return the processed data
     return adata
+
+
+# ======================================================================================================================================================
+
+
+# This function loads a model from a checkpoint file if it exists, otherwise it will raise an error.
+# This function needs an overhaul. It should:
+# - load model weights
+# - load an optimizer state
+# - load a scheduler state
+# - load model metrics
+# - and probably load model hyperparamaters
+# Ideally all of this would be loaded from a single file.
+# Also this function probably belongs in the base model file.
+def load_checkpoint_model(model, model_filename: str):
+
+    if os.path.isfile(model_filename):
+        log_and_print(f"Loading checkpoint from '{model_filename}'")
+
+        model_state = torch.load(model_filename)
+        model.load_state_dict(model_state)
+
+        log_and_print(f"Checkpoint loaded successfully")
+
+    else:
+        log_and_print(
+            f"No checkpoint found at '{model_filename}', starting training from scratch"
+        )
+
+        raise FileNotFoundError(f"No checkpoint found at '{model_filename}'")
+
+    return model
+
+
+# This function saves the model to a new file
+def save_model(model, save_path: str, timestamp: str, descriptor: str, epoch: int):
+    model_save_path = os.path.join(
+        save_path,
+        f"{timestamp}_{descriptor}_e{epoch}_model.pth",
+    )
+
+    torch.save(model.state_dict(), model_save_path)
+
+    log_checkpoint(model_path=model_save_path)
+
+
+# This function saves the model metrics to a csv file.
+# It should probably be combined with the save_model function.
+def save_model_metrics(model_metrics, save_path: str, timestamp: str, descriptor: str):
+    metrics_save_path = os.path.join(
+        save_path,
+        f"{timestamp}_{descriptor}_model_performance.csv",
+    )
+
+    pd.DataFrame(model_metrics).to_csv(metrics_save_path, index=False)
+
+    log_checkpoint(
+        metrics_path=metrics_save_path,
+    )
