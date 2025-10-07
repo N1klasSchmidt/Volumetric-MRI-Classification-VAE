@@ -7,6 +7,7 @@ import pandas as pd
 import os
 import torch
 import logging
+from typing import Dict, Tuple, List
 
 from utils.data_utils import (
     load_mri_data,
@@ -22,7 +23,30 @@ from utils.logging_utils import (
 # Use non-interactive plotting to avoid tmux crashes
 matplotlib.use("Agg")
 
-def load_data_for_model(config, train_df, valid_df, resampling_ext, atlas_map):
+
+# ====================================================================================================
+#
+# **LOAD data for model training**
+#
+# This script handles the loading of all the data for training and validation. Testing loading is 
+# handled by the prediction class in aggr_VAE_prediction.py. The output of this function are the data 
+# loaders that can then be passed to the initialized model for training and validation. 
+#
+# ====================================================================================================
+
+
+def load_data_for_model(
+        # Config dictionary with all parameters for model training
+        config: Dict, 
+        # Metadata annotations for all training patients
+        train_df: pd.DataFrame, 
+        # Metadata annotations for all validation patients
+        valid_df: pd.DataFrame, 
+        # The resampling_ext is crucial for loading the correct data
+        resampling_ext: str, 
+        # Mapping of atlas to atlas abbreviations
+        atlas_map: Dict,
+        ):
 
     # Set seed for reproducibility
     torch.manual_seed(config.SEED)

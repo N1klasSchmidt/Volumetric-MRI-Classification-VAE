@@ -5,24 +5,22 @@ from datetime import datetime, timedelta
 from typing import Dict
 from utils.config_utils import Config_XCov_CV
 
-"""
-Logging functions used to track training progress.
-"""
+
+# ====================================================================================================
+#
+# **LOGGING util functions**
+#
+# Here all functions used to log training and testing can be found. These are outputted to a central
+# logging file, making it easy to follow training. All outputs from the logging functions are also 
+# printed to the terminal. The functions are generally split into training and prediction logging. 
+#
+# ====================================================================================================
+
+
 _logging_configured = False
 
-# def log_and_print(message: str):
-#     """
-#     Log and print a message.
-#     """
-#     logging.info(message)
-#     print(message)
-
-
+# Sets up logging to output to both a file and the console. This function should be called ONLY ONCE from main script.
 def setup_logging(config):
-    """
-    Sets up logging to output to both a file and the console.
-    This function should be called ONLY ONCE from your main script.
-    """
     global _logging_configured
     if _logging_configured:
         return
@@ -64,25 +62,17 @@ def setup_logging(config):
     logging.info("Configuration:")
     for parameter, value in config.__dict__.items():
         logging.info(f"  - {parameter}: {value}")
-    #logging.info("-" * 50)
     logging.info(f"Log file available at: {log_filename}")
-    #logging.info("-" * 50)
 
+# Used to log a section title
 def log_title(title: str):
     title_len = len(title)
     border = "#"*((100-title_len)//2)
     return f"{border} {title} {border}"
 
-
+# THis function is incorporated in a lot of the other logging functions, simply for convenience.
+# Takes a message and ouputs either 'info', 'warning', 'error', 'debug' depending on level. 
 def log_and_print(message: str, level: str = "info"):
-    """
-    A convenience function to log a message.
-    It will appear in both the console and the log file.
-
-    Args:
-        message (str): The message to log.
-        level (str): The logging level ('info', 'warning', 'error', 'debug').
-    """
     # Get a logger instance named after the calling module
     # This helps in tracing where the log message originated from
     logger = logging.getLogger(__name__)
@@ -92,53 +82,11 @@ def log_and_print(message: str, level: str = "info"):
     
     log_func(message)
 
-
-# def setup_logging_old(config: Config_XCov_CV):
-#     """
-#     Set up logging for the training session.
-
-#     """
-#     filename = os.path.join(
-#         config.LOGGING_DIR, f"{config.TIMESTAMP}_{config.RUN_NAME}_training_log_.txt"
-#     )
-#     # Set the logging configuration
-#     logging.basicConfig(
-#         filename=filename,
-#         level=logging.INFO,
-#         format="%(asctime)s - %(levelname)s - %(message)s",
-#         datefmt="%Y-%m-%d %H:%M:%S",
-#     )
-
-#     # Log the initial configuration settings
-#     logging.info("Starting new training session")
-#     logging.info(f"Configuration:")
-#     for parameter, value in config.__dict__.items():
-#         logging.info(f"{parameter}: {value}")
-
-#     # Print the start time
-#     title = f"Starting Catatonia CPA training session {config.RUN_NAME} at {config.TIMESTAMP}"
-#     print("")
-#     print("#" * 100)
-#     print("")
-#     print(title)
-#     print("-" * len(title))
-#     print("")
-#     print(f"Using Device:        {config.DEVICE}")
-#     print(f"Queued Epochs:       {config.TOTAL_EPOCHS}")
-#     print(f"Batch Size:          {config.BATCH_SIZE}")
-#     print(f"MRI Data Directory:  {config.MRI_DATA_PATH}")
-#     print(f"Loading Model:       {config.LOAD_MODEL}")
-#     print(f"Output Directory:    {config.OUTPUT_DIR}")
-#     print("")
-#     print(f"More details in log file: {filename}")
-#     print("")
-#     print("#" * 100)
-#     print("")
-
-
+# Log which atlases are being used and the number of inputs the model is taking
 def log_atlas_mode(atlas_name: str, num_rois: int):
     log_and_print(f"Using atlas: {atlas_name} - Total number of ROIs: {num_rois}")
 
+# Log the datasets
 def log_data_loading(datasets: Dict[str, int]):
     colon = ":"
     for dataset, n_subjects in datasets.items():
@@ -146,10 +94,11 @@ def log_data_loading(datasets: Dict[str, int]):
             f"{dataset+colon:<20} {n_subjects:>4} subjects loaded"
         )
 
+
 def log_model_setup():
     logging.info("Creating Model")
 
-
+# Log before the start of model training 
 def log_model_ready(model):
 
     log_and_print(f"Model Archtecture: \n{model}")
@@ -195,21 +144,18 @@ def log_model_ready(model):
     log_and_print(f"    Total Parameters:    {total_params:,}")
     log_and_print(f"    Trainable Params:    {trainable_params:,}")
 
-
+# Log the start of the training and validation loop 
 def log_training_start():
     message = "Starting Training / Validation Loop"
     log_and_print(message)
 
+# Log training or validation metrics.
 def log_model_metrics(
     epoch: int,
     metrics: Dict[str, float],
     type: str,
-    prefix: str = "",
     n_digits: int = 3,
 ):
-    """
-    Log training or validation metrics.
-    """
 
     metrics_log = ""
 
@@ -235,13 +181,13 @@ def log_model_metrics(
 
             metrics_log = ""
 
-
+# Log that currently the latent space is being extracted
 def log_extracting_latent_space(data_type: str):
     log_and_print(
         f"{datetime.now()+timedelta(hours=2):%H:%M} - Extracting Latent Space of {data_type}."
     )
 
-
+# Log the metrics of a certain checkpoint. 
 def log_checkpoint(
     figure_path: str = None, model_path: str = None, metrics_path: str = None
 ):
@@ -258,7 +204,7 @@ def log_checkpoint(
             f"{datetime.now()+timedelta(hours=2):%H:%M} - Checkpoint Save:     Metrics saved to {metrics_path}"
         )
 
-
+# Log that training was terminated because the learning rate went below a certain threshold
 def log_early_stopping(
     current_lr: float,
     min_lr: float,
@@ -267,14 +213,15 @@ def log_early_stopping(
     message = f"Stopping Training at Epoch {current_epoch} because current learning rate {current_lr} is below minimum learning rate {min_lr}."
     log_and_print(message)
 
-
+# Log that training was terminated because the goal metric (e.g. valid_loss or accuracy) hasn't improved in a certain number of epochs
 def log_early_stopping_th(
     threshold: int, 
     current_epoch: int,
 ):
-    message = f"Stopping Training at Epoch {current_epoch} because accuracy hasn't improved in {threshold} Epochs."
+    message = f"Stopping Training at Epoch {current_epoch} because goal metric hasn't improved in {threshold} Epochs."
     log_and_print(message)
 
+# Log the ent of logging
 def end_logging(config: Config_XCov_CV):
     logging.info(log_title("TRAINING COMPLETED"))
     
@@ -300,6 +247,9 @@ def end_logging(config: Config_XCov_CV):
     logging.info(airplane_art)
 
 
+# ================================================== Prediction Logging ==================================================
+
+# Log the start of prediction
 def setup_prediction_logging(config: Config_XCov_CV):
     """
     Set up logging for the training session.
@@ -326,49 +276,11 @@ def setup_prediction_logging(config: Config_XCov_CV):
     title = f"Starting testing / prediction session {config.RUN_NAME} at {config.TIMESTAMP}"
     print(title)
 
-
-def log_pred_model_ready(model, atlas_name, model_path = None):
-
-    if model_path is not None:
-        log_and_print(f"Model saved at: {model_path}")
-    #log_and_print(f"Model Archtecture {atlas_name} used for prediction: \n{model}")
-    print()
-
-    colon = ":"
-
-    for parameter, value in model.__dict__.items():
-        if parameter in [
-            "optimizer",
-            "scheduler",
-            "scaler",
-            "kldiv_loss_weight",
-            "recon_loss_weight",
-            "class_loss_weight",	
-            "contrast_temperature",
-            "num_epochs",
-            "device",
-            "learning_rate",
-            "weight_decay",
-            "image_size",
-            "out_channels",
-            "encoded_image_dim",
-            "encoder_output_dim",
-            "latent_dim",
-            "schedule_on_validation",
-            "scheduler_patience",
-            "scheduler_factor",
-        ]:
-            log_and_print(f"    {parameter+colon:<20} {str(value).splitlines()[0]}")
-
-
+# Log performance metrics of a testing / prediction run
 def log_prediction_metrics(
     epoch: int,
     metrics: Dict[str, float],
-    n_digits: int = 3,
 ):
-    """
-    Log prediction metrics.
-    """
 
     metrics_log = ""
 
@@ -387,7 +299,7 @@ def log_prediction_metrics(
             metrics_log = ""
 
 
-
+# Log the end of a specific testing / prediction run
 def end_prediction_logging(config: Config_XCov_CV):
     end_messsage = f"Training session completed at {datetime.now()+timedelta(hours=2)}."
 

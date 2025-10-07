@@ -15,6 +15,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import copy
+import hashlib
 
 # Import helper functions for data handling, logging and plotting
 from utils.helper_utils import loss_proportions, update_performance_metrics
@@ -27,7 +28,6 @@ from utils.data_utils import (
 )
 from utils.logging_utils import (
     end_logging,
-    log_and_print,
     log_checkpoint,
     log_early_stopping,
     log_early_stopping_th,
@@ -43,13 +43,22 @@ from utils.plotting_utils import (
     metrics_plot,
 )
 
-"""
-This is the code of the ClassVAE model extended WITH a cross-covariance penalty. It builds upon the base 2D ClassVAE.
-The model architecture is very simple, featuring a two layer encoder and decoder and a classifier attached to the latent space. 
-Additionally there is a covariable classifier attached to the final layer of the encoder. The function xcov_loss_fn is the critical component.
-The model class if trained by a separate function. 
-"""
+# ====================================================================================================
+#
+# **VAE^2 model**
+#
+# The VAE^2 model takes as input a modular amount of atlas segementations for each patients. Several 
+# "sub-VAEs" handle this data and compress each atlas into a single latent space. The latent spaces
+# are aggregated to allow for a single classifier to predict the diagnostic label. The aggregated
+# latent space is reconstructed into the input. After training the latent spaces are extracted and 
+# plotted for all samples. Which plots are generated can be adjusted in VAE2_training.py  
+#
+# This is the version of the model WITH a cross-covariance penalty that penalizes cross covariance 
+# between the latent space and a predicted covariate label.
+#
+# ====================================================================================================
 
+# Initialize an encoder
 def init_encoder(input_dim, hidden_dim, dropout_prob, latent_dim):
     encoder = nn.Sequential(
         #Layer 1 
@@ -58,23 +67,18 @@ def init_encoder(input_dim, hidden_dim, dropout_prob, latent_dim):
         nn.Dropout1d(p=dropout_prob),
         #Layer 2 
         nn.Linear(hidden_dim, int(hidden_dim/2)),
-        # nn.LeakyReLU(1e-2),
-        # nn.Dropout1d(p=dropout_prob),
-        # # Layer 3 
-        # nn.Linear(hidden_dim, int(hidden_dim/2)),
         nn.LeakyReLU(1e-2),
         nn.Dropout1d(p=dropout_prob),
         nn.Linear(int(hidden_dim/2), latent_dim),
-        #nn.Linear(hidden_dim, latent_dim)
         )
     return encoder 
 
-def init_decoder(input_dim, hidden_dim, dropout_prob, latent_dim):
+# Initialize a decoder
+def init_decoder(input_dim, hidden_dim, dropout_prob, latent_dim, num_xcov_groups):
     decoder = nn.Sequential(
-        nn.Linear(latent_dim, int(hidden_dim/2)),  # For cross covariance, pass the age information back into the model! 
+        nn.Linear(latent_dim + num_xcov_groups, int(hidden_dim/2)),  # For cross covariance, pass the age information back into the model! 
         nn.LeakyReLU(1e-2),
         nn.Dropout1d(p=dropout_prob*2),
-        # nn.Linear(hidden_dim, hidden_dim),
         # Layer 2
         nn.Linear(int(hidden_dim/2), hidden_dim),  # For cross covariance, pass the age information back into the model! 
         nn.LeakyReLU(1e-2),
@@ -84,7 +88,7 @@ def init_decoder(input_dim, hidden_dim, dropout_prob, latent_dim):
     return decoder
 
 
-class NewVAE_no_XCov(nn.Module):
+class VAE2(nn.Module):
 
     def __init__(
         self,
@@ -104,6 +108,8 @@ class NewVAE_no_XCov(nn.Module):
         xcov_weight: float,
         # The weight of the age classifier
         xcov_cat_weight: float, 
+        # The weight of the orthogonality loss
+        ortho_weight: float,
         # The gradient scaler for mixed precision training
         scaler: GradScaler,
         # NEW! Size of input data
@@ -130,10 +136,12 @@ class NewVAE_no_XCov(nn.Module):
         fine_tuning: bool = False,
         # What is the weight of each of the classes in cross entropy?
         ce_class_weights: list = [1.0, 1.0, 1.0],
+        # Dropout probability
         dropout_prob: float = 0.3,
+        # Cross-covariance covariate for which should be corrected during training
         xcov_covar: str = "Dataset"
     ):
-        super(NewVAE_no_XCov, self).__init__()  # should be possible to change this to super().__init__()
+        super(VAE2, self).__init__()
         
         # This model combines several VAEs which each take their own unique input, akin to multi-modal VAEs.
         # Each VAE produces a latent space. These latent spaces are concatenated to form a aggregated latent vector.
@@ -159,8 +167,10 @@ class NewVAE_no_XCov(nn.Module):
                                    hidden_dim=hidden_dim,
                                    dropout_prob=dropout_prob,
                                    latent_dim=latent_dim,
+                                   num_xcov_groups=num_xcov_groups
                                    )
             
+            xcov_classifier = nn.Sequential(nn.Linear(latent_dim, num_xcov_groups)) # The latent_dim here shouldn't be concerning! It is NOT the latent space that is being classified on, but the output of the encoder! 
 
             fc_mu = nn.Sequential(nn.Linear(latent_dim, latent_dim),)
             
@@ -169,6 +179,7 @@ class NewVAE_no_XCov(nn.Module):
             # For each input atlas we initialize one VAE model with an attached XCov classifier.
             sub_vae = nn.ModuleDict({"encoder": encoder, 
                                      "decoder": decoder, 
+                                     "xcov_classifier": xcov_classifier,
                                      "fc_mu": fc_mu,
                                      "fc_var": fc_var,}
                                      )
@@ -176,38 +187,11 @@ class NewVAE_no_XCov(nn.Module):
             sub_vae = sub_vae.float()
 
             self.whole_model.append(sub_vae)
-
-        # # 1. Encoder
-        # self.encoder = nn.Sequential(
-        #     # Layer 1
-        #     nn.Linear(input_dim, hidden_dim),
-        #     nn.LeakyReLU(1e-2),
-        #     nn.Dropout1d(p=dropout_prob),
-        #     # Layer 2
-        #     nn.Linear(hidden_dim, latent_dim),
-        # )
         
-        # # Classify the group that we want to remove from the latent space
-        # self.xcov_classifier = nn.Sequential(
-        #     #nn.Linear(latent_dim, hidden_dim),
-        #     #nn.LeakyReLU(1e-2),
-        #     nn.Linear(latent_dim, num_xcov_groups)  # The latent dim here shouldn't be concerning! It is NOT the latent space that is being classified on, but the output of the encoder! 
-        # )
-
-        #self.encoder_feature_dim = int(latent_dim)
-
-        # Latent Space, generates as mu and logvar for reparameterization
-        # Latent space has the dimensionality of the latent_dim parameter.
-        # Whenever something uses the latent space, it will usually be referring to mu, since z is noisy.
-        # self.fc_mu = nn.Linear(self.encoder_feature_dim, latent_dim)
-        # self.fc_var = nn.Linear(self.encoder_feature_dim, latent_dim)
-
-        # 2. Classifier
         # The classifier is a simple neural network.
         # It takes the mu as input and outputs logits for each class.
         # The number of classes predicted is determined by the num_classes parameter.
         self.concat_dim = int(sum([int(input_dim**0.5) for atlas, input_dim in atlas_input_dims.items()]))
-        #self.concat_dim = int((len(atlas_input_dims)*latent_dim))
         
         self.classifier = nn.Sequential(
             # Layer 2
@@ -217,17 +201,6 @@ class NewVAE_no_XCov(nn.Module):
             # Output
             nn.Linear(int(20), num_classes),
         )
-
-        # # 3. Decoder
-        # self.decoder = nn.Sequential(
-        #     # Layer 1
-        #     nn.Linear(latent_dim + num_xcov_groups, hidden_dim),  # For cross covariance, pass the age information back into the model! 
-        #     nn.LeakyReLU(1e-2),
-        #     nn.Dropout1d(p=dropout_prob),
-        #     # Layer 2
-        #     nn.Linear(hidden_dim, input_dim),
-        #     # nn.Sigmoid()  # For normalization to [0,1]
-        # )
 
         # Set training parameters
         # Set optimizer
@@ -253,6 +226,7 @@ class NewVAE_no_XCov(nn.Module):
         self.class_loss_weight = class_loss_weight
         self.xcov_loss_weight = xcov_weight
         self.xcov_cat_weight = xcov_cat_weight
+        self.ortho_loss_weight = ortho_weight
         self.batch_size = batch_size
 
         # set number of classes
@@ -262,6 +236,8 @@ class NewVAE_no_XCov(nn.Module):
 
         # additional loss metrics
         # self.use_ssim = use_ssim
+
+        self.best_model_path = None
 
         # Record some values for logging
         self.schedule_on_validation = schedule_on_validation
@@ -279,8 +255,8 @@ class NewVAE_no_XCov(nn.Module):
             self.device = device
             self.to(device)
         
-        if ce_class_weights:
-            self.ce_class_weights = torch.tensor(ce_class_weights).to(self.device)
+        if ce_class_weights is not None:
+            self.ce_class_weights = torch.tensor(ce_class_weights, dtype=torch.float).to(self.device)
         else:
             self.ce_class_weights = None
 
@@ -295,7 +271,7 @@ class NewVAE_no_XCov(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
 
         vae_reconstructions = []
-
+        vae_xcov_preds = []
         vae_latent_spaces = []
         vae_mus = []
         vae_vars = []
@@ -311,13 +287,11 @@ class NewVAE_no_XCov(nn.Module):
 
             sub_x = current_vae["encoder"](sub_x)
 
-            # Add these checks before and after fc_mu
-            # print("sub_x stats:", sub_x.min(), sub_x.max(), sub_x.mean(), sub_x.std())
-            # print("fc_mu weight stats:", current_vae["fc_mu"][0].weight.min(), 
-            #     current_vae["fc_mu"][0].weight.max(), current_vae["fc_mu"][0].weight.norm())
+            xcov_pred = current_vae["xcov_classifier"](sub_x)
+            xcov_pred_max = F.softmax(xcov_pred, dim=1)
+            vae_xcov_preds.append(xcov_pred_max)
 
             mu = current_vae["fc_mu"](sub_x)
-            #print("mu stats before nan check:", mu.min(), mu.max(), mu.mean(), mu.std())
 
             logvar = current_vae["fc_var"](sub_x)
             vae_mus.append(mu)
@@ -326,7 +300,7 @@ class NewVAE_no_XCov(nn.Module):
             z = self.reparameterize(mu, logvar)
             vae_latent_spaces.append(z)
 
-            decoder_input = z #torch.cat([z], dim=1)
+            decoder_input = torch.cat([z, xcov_pred], dim=1)
 
             sub_x = current_vae["decoder"](decoder_input)
 
@@ -337,18 +311,16 @@ class NewVAE_no_XCov(nn.Module):
 
         class_logits = self.classifier(concat_latent_vector)
 
-        return vae_reconstructions, vae_mus, vae_vars, class_logits,  concat_latent_spaces_z
+        return vae_reconstructions, vae_mus, vae_vars, class_logits, vae_xcov_preds, concat_latent_spaces_z
 
     # This function is used to convert an image to the latent space.
     # This is useful for investigating the latent space the mode produces.
     def to_latent(self, x: torch.Tensor) -> torch.Tensor:
 
-        vae_reconstructions = []
-        vae_latent_spaces = []
+        vae_xcov_preds = []
         vae_mus = []
-        vae_vars = []
 
-        for idx, atlas_dim in enumerate(self.atlas_input_dims.values()):
+        for idx, _ in enumerate(self.atlas_input_dims.values()):
             start_idx = self.input_dims[idx]
             end_idx = self.input_dims[idx+1]
             sub_x = x[:, start_idx:end_idx]
@@ -356,6 +328,9 @@ class NewVAE_no_XCov(nn.Module):
             current_vae = self.whole_model[idx]
 
             sub_x = current_vae["encoder"](sub_x)
+            xcov_pred = current_vae["xcov_classifier"](sub_x)
+            xcov_pred_max = F.softmax(xcov_pred, dim=1)
+            vae_xcov_preds.append(xcov_pred_max)
 
             mu = current_vae["fc_mu"](sub_x)
             vae_mus.append(mu)
@@ -364,7 +339,7 @@ class NewVAE_no_XCov(nn.Module):
         class_logits = self.classifier(concat_latent_vector)
 
         # Return the the latent space and the classifier logits
-        return concat_latent_vector, class_logits
+        return concat_latent_vector, class_logits, vae_xcov_preds
 
     # This function performs reparameterization, which is used to sample from the latent space before decoding.
     def reparameterize(
@@ -398,7 +373,7 @@ class NewVAE_no_XCov(nn.Module):
         self.train()
 
         # Initialize loss values, total loss is the sum of the class, reconstruction, and KL Divergence losses
-        total_loss, class_loss, recon_loss, kldiv_loss = 0.0, 0.0, 0.0, 0.0
+        total_loss, class_loss, recon_loss, kldiv_loss, xcov_loss = 0.0, 0.0, 0.0, 0.0, 0.0
 
         # Go through each batch in the training dataset
         for batch_idx, (measurements, labels, names) in enumerate(train_loader):
@@ -411,15 +386,13 @@ class NewVAE_no_XCov(nn.Module):
                 logging.info(f"Train Batch {batch_idx} contains NaNs")
             
             batch_labels = torch.stack([label for label in labels["Diagnosis"]]).to(self.device)
-            #batch_xcov = torch.transpose(torch.stack([label for label in labels[self.xcov_covar]]), 0, 1).to(self.device)  # Shape = [64, 6]
+            batch_xcov = torch.transpose(torch.stack([label for label in labels[self.xcov_covar]]), 0, 1).to(self.device)  # Shape = [64, 6]
 
             if self.fine_tuning:
                 batch_labels = torch.roll(batch_labels, shifts=-1, dims=0)
-                
-            # Autocast for mixed precision training (faster training)
-            #with autocast():
+            
             # Forward pass through model
-            recon_measurements, mus, logvars, class_logits, latent_spaces = self(batch_measurements)
+            recon_measurements, mus, logvars, class_logits, xcov_preds, latent_spaces = self(batch_measurements)
 
             batch_recon_measurements = torch.cat(recon_measurements, dim=1)
 
@@ -429,13 +402,16 @@ class NewVAE_no_XCov(nn.Module):
                 b_class_loss,
                 b_recon_loss,
                 b_kldiv_loss,
-            ) = self.new_combined_loss_function(
+                b_xcov_loss,
+            ) = self.combined_loss_function(
                 recon_measurements=batch_recon_measurements,
                 target_measurements=batch_measurements,
                 mus=mus,
                 log_vars=logvars,
                 class_logits=class_logits,
                 labels=batch_labels,
+                pred_xcov_groups=xcov_preds,
+                target_xcov_groups=batch_xcov,
                 batch_latent_sample=mus  # Use mu as the latent space sample, as this is conceptually closest to the implementation from Cheung et al.
             )
 
@@ -461,6 +437,7 @@ class NewVAE_no_XCov(nn.Module):
             class_loss += b_class_loss.item()
             recon_loss += b_recon_loss.item()
             kldiv_loss += b_kldiv_loss.item()
+            xcov_loss += b_xcov_loss.item()
 
         # calculate loss averaged by the number of samples
         epoch_metrics = {
@@ -468,6 +445,7 @@ class NewVAE_no_XCov(nn.Module):
             "t_class_loss": class_loss / len(train_loader.dataset),
             "t_recon_loss": recon_loss / len(train_loader.dataset),
             "t_kldiv_loss": kldiv_loss / len(train_loader.dataset),
+            "t_xcov_loss": xcov_loss / len(train_loader.dataset),
         }
 
         # loss proportions are a bit more interpretable for printing and logging
@@ -511,66 +489,64 @@ class NewVAE_no_XCov(nn.Module):
         self.eval()
 
         # Initialize loss values, total loss is the sum of the class, reconstruction, and KL Divergence losses
-        total_loss, class_loss, recon_loss, kldiv_loss = 0.0, 0.0, 0.0, 0.0
+        total_loss, class_loss, recon_loss, kldiv_loss, xcov_loss = 0.0, 0.0, 0.0, 0.0, 0.0
 
         # Initialize lists to store classifier predictions and diagnostic labels
         all_preds = []
         all_labels = []
 
         # Go through each batch in the validation dataset
-        for batch_idx, (measurements, labels, names) in enumerate(valid_loader):
+        with torch.no_grad():
+            for batch_idx, (measurements, labels, names) in enumerate(valid_loader):
 
-            # Move samples to device
-            batch_measurements = torch.stack([measurement for measurement in measurements]).to(self.device)  # Shape = [batch_size, input_features]
-            
-            nas = torch.sum(torch.isnan(batch_measurements))
-            if nas != 0:
-                logging.info(f"Valid Batch {batch_idx} contains NaNs")
-            
-            batch_labels = torch.stack([label for label in labels["Diagnosis"]]).to(self.device)  # Shape = [num_classes, batch_size] ? 
-            #batch_xcov = torch.transpose(torch.stack([label for label in labels[self.xcov_covar]]), 0, 1).to(self.device)  # Shape = [64, 6]
-            batch_names = names
+                # Move samples to device
+                batch_measurements = torch.stack([measurement for measurement in measurements]).to(self.device)  # Shape = [batch_size, input_features]
+                
+                nas = torch.sum(torch.isnan(batch_measurements))
+                if nas != 0:
+                    logging.info(f"Valid Batch {batch_idx} contains NaNs")
+                
+                batch_labels = torch.stack([label for label in labels["Diagnosis"]]).to(self.device)  # Shape = [num_classes, batch_size]
+                batch_xcov = torch.transpose(torch.stack([label for label in labels[self.xcov_covar]]), 0, 1).to(self.device)
 
-            if self.fine_tuning:
-                batch_labels = torch.roll(batch_labels, shifts=-1, dims=0)
+                # Forward pass
+                recon_measurements, mus, logvars, class_logits, xcov_preds, latent_spaces = self(batch_measurements)
+                batch_recon_measurements = torch.cat(recon_measurements, dim=1)
+                assert batch_recon_measurements.shape == batch_measurements.shape
+                
+                # Calculate loss
+                (
+                    b_total_loss,
+                    b_class_loss,
+                    b_recon_loss,
+                    b_kldiv_loss,
+                    b_xcov_loss,
+                ) = self.combined_loss_function(
+                    recon_measurements=batch_recon_measurements,
+                    target_measurements=batch_measurements,
+                    mus=mus,
+                    log_vars=logvars,
+                    class_logits=class_logits,
+                    labels=batch_labels,
+                    pred_xcov_groups=xcov_preds,
+                    target_xcov_groups=batch_xcov,
+                    batch_latent_sample=mus  # Use mu as the latent space sample, as this is conceptually closest to the implementation from Cheung et al.
+                )
 
-            # Calculate loss, autocast for mixed precision training (faster)
-            #with autocast():
-            # Forward pass
-            recon_measurements, mus, logvars, class_logits, latent_spaces = self(batch_measurements)
-            batch_recon_measurements = torch.cat(recon_measurements, dim=1)  # Shape = [64, 680]
-            assert batch_recon_measurements.shape == batch_measurements.shape
-            
-            # Calculate loss
-            (
-                b_total_loss,
-                b_class_loss,
-                b_recon_loss,
-                b_kldiv_loss,
-            ) = self.new_combined_loss_function(
-                recon_measurements=batch_recon_measurements,
-                target_measurements=batch_measurements,
-                mus=mus,
-                log_vars=logvars,
-                class_logits=class_logits,
-                labels=batch_labels,
-                batch_latent_sample=mus  # Use mu as the latent space sample, as this is conceptually closest to the implementation from Cheung et al.
-            )
+                # sum loss stats for this batch
+                total_loss += b_total_loss.item()
+                class_loss += b_class_loss.item()
+                recon_loss += b_recon_loss.item()
+                kldiv_loss += b_kldiv_loss.item()
+                xcov_loss += b_xcov_loss.item()
 
-            # sum loss stats for this batch
-            total_loss += b_total_loss.item()
-            class_loss += b_class_loss.item()
-            recon_loss += b_recon_loss.item()
-            kldiv_loss += b_kldiv_loss.item()
+                # Calculate Model Predictions and format diagnostic labels
+                preds = torch.argmax(class_logits, dim=1)
+                labels = torch.argmax(batch_labels, dim=0)
 
-            # Calculate Model Predictions and format diagnostic labels
-            preds = torch.argmax(class_logits, dim=1)
-            labels = torch.argmax(batch_labels, dim=0)
-
-
-            # Save predictions and labels
-            all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
+                # Save predictions and labels
+                all_preds.extend(preds.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
 
         # Caclulate confusion matrix metrics based on all predictions and labels
         accuracy = accuracy_score(all_labels, all_preds)
@@ -592,6 +568,7 @@ class NewVAE_no_XCov(nn.Module):
             "v_class_loss": class_loss / len(valid_loader.dataset),
             "v_recon_loss": recon_loss / len(valid_loader.dataset),
             "v_kldiv_loss": kldiv_loss / len(valid_loader.dataset),
+            "v_xcov_loss": xcov_loss / len(valid_loader.dataset),
         }
 
         # loss proportions are a bit more interpretable for printing and logging
@@ -621,6 +598,47 @@ class NewVAE_no_XCov(nn.Module):
 
         # return all metrics
         return epoch_metrics
+    
+    def predict(
+            self,
+            # Data loader on which the model should predict.
+            dataloader: DataLoader
+            ):
+        
+        """Generates predictions for the given data."""
+        
+        if self.best_model_path is None:
+             print("Warning: best_model_path is not set. Using the current model state.")
+        else:
+            try:
+                # Load state dictionary, mapping it to the current device
+                best_state_dict = torch.load(self.best_model_path, map_location=self.device)
+                self.load_state_dict(best_state_dict)
+                print(f"Loaded best model state from {self.best_model_path}")
+            except FileNotFoundError:
+                print(f"Error: Best model state file not found at {self.best_model_path}. Using the current model state.")
+            except Exception as e:
+                print(f"Error loading best model state: {e}. Using the current model state.")
+
+        self.eval()
+        total_samples = len(dataloader.dataset)
+        predictions = np.zeros((total_samples, 3), dtype=np.float32)
+
+        with torch.no_grad():
+            for batch_idx, (measurements, labels, names) in enumerate(dataloader):
+
+                # Move samples to device
+                batch_measurements = torch.stack([measurement for measurement in measurements]).to(self.device)
+                
+                with autocast():
+                # Forward pass
+                    recon_measurments, mus, logvars, class_logits, xcov_preds, z = self(batch_measurements)
+
+                start_idx = batch_idx * dataloader.batch_size
+                end_idx = min(start_idx + len(class_logits), total_samples)
+
+                predictions[start_idx:end_idx] = class_logits.cpu().numpy()
+        return predictions
 
     # Function to extract latent embedding of data fed to the model.
     # This is useful for investigating the latent space the model produces.
@@ -646,6 +664,7 @@ class NewVAE_no_XCov(nn.Module):
         latent_spaces = []
         sample_names = []
         predictions = []
+        xcov_predicted_labels = []
 
         # Go through each batch in the data loader
         for batch_idx, (measurements, labels, names) in enumerate(data_loader):
@@ -653,20 +672,24 @@ class NewVAE_no_XCov(nn.Module):
             batch_measurements = torch.stack([measurement.to(self.device) for measurement in measurements])
 
             # forward to latent space
-            mu, class_logits = self.to_latent(batch_measurements)
+            mu, class_logits, xcov_preds = self.to_latent(batch_measurements)
 
+            # We select the majortiy predicted XCov label across each of the single VAEs
+            xcov_pred_labels = torch.stack([xcov_pred.argmax(dim=1) for xcov_pred in xcov_preds], dim=0)  # Shape = [num_atlases, batch_size]
+            xcov_majority_labels, _ = torch.mode(xcov_pred_labels, dim=0)  # Shape = [batch_size]
             
             # collect running output info
             latent_spaces.append(mu.cpu().numpy())
             sample_names.extend(names)
             predictions.append(class_logits.argmax(dim=1).cpu().numpy())
+            xcov_predicted_labels.append(xcov_majority_labels.cpu().numpy())
 
         # create anndata object of latent space
         adata = ad.AnnData(np.concatenate(latent_spaces))
 
         # add metadata to anndata object, namely sample names and classifier predictions
         adata.obs_names = sample_names
-        #adata.obs["Diagnosis_pred"] = pd.Categorical(np.concatenate(predictions))
+        adata.obs["XCov_pred"] = pd.Categorical(np.concatenate(xcov_predicted_labels))
 
         mapping = {0: "HC",
                    1: "MDD",
@@ -675,7 +698,6 @@ class NewVAE_no_XCov(nn.Module):
         adata.obs["Diagnosis_pred"] = pd.Categorical(np.concatenate(predictions))
         adata.obs["Diagnosis_pred"] = adata.obs["Diagnosis_pred"].cat.rename_categories(mapping)
 
-        # return anndata object
         return adata
 
     # Function to initialize weights of the model, using the Kaiming Uniform and Xavier Uniform initializations.
@@ -707,15 +729,15 @@ class NewVAE_no_XCov(nn.Module):
             latent_j = latent_tensors[j]  # [batch_size, latent_dim_j]
             
             # Normalize the latent vectors to unit length for each sample
-            latent_i_norm = F.normalize(latent_i, p=2, dim=1)  # [batch_size, latent_dim_i]
-            latent_j_norm = F.normalize(latent_j, p=2, dim=1)  # [batch_size, latent_dim_j]
+            latent_i_norm = F.normalize(latent_i)  # [batch_size, latent_dim_i]
+            latent_j_norm = F.normalize(latent_j)  # [batch_size, latent_dim_j]
             
             # Use matrix multiplication to compute similarities between all pairs
             # This creates a [latent_dim_i, latent_dim_j] similarity matrix
             similarity_matrix = torch.mm(latent_i_norm.T, latent_j_norm)  # [latent_dim_i, latent_dim_j]
             
             # Orthogonality loss: minimize all pairwise similarities between dimensions
-            # We want the similarity matrix to be close to zero everywhere
+            # We want the similarity matrix to be close to zero everywhere, which is the case if two latent features are prefectly orthogonal!
             pair_ortho_loss = torch.mean(similarity_matrix ** 2)
             
             total_ortho_loss += pair_ortho_loss
@@ -726,11 +748,26 @@ class NewVAE_no_XCov(nn.Module):
         
         return ortho_loss
 
+    # Loss function to compute cross covariance of latent space and convert to loss
+    def xcov_loss_fn(self, latent, observed, batch_size):
+
+        # Center the latent variables and observed class probabilities
+        latent_centered = latent - torch.mean(latent, dim=0, keepdim=True)
+        observed_centered = observed - torch.mean(observed, dim=0, keepdim=True)
+        
+        # Calculate cross-covariance matrix
+        cross_cov = torch.matmul(latent_centered.t(), observed_centered) / batch_size
+        
+        # Calculate loss as the sum of squared cross-covariance values
+        xcov_loss = 0.5 * torch.sum(cross_cov ** 2)
+        
+        return xcov_loss
+
     # Function to calculate the combined loss of the model.
     # This is the main loss function of the model, which is used to train the model.
-    # The total loss is the sum of the classifier, reconstruction, and KL Divergence losses.
+    # The total loss is the sum of the classifier, reconstruction, KL Divergence, XCov and Orthogonality losses.
     # The total loss is used to update the model weights.
-    def new_combined_loss_function(
+    def combined_loss_function(
         self,
         # The reconstructed measurements, after passing through the decoder
         recon_measurements: list[torch.Tensor],
@@ -744,18 +781,24 @@ class NewVAE_no_XCov(nn.Module):
         class_logits: torch.Tensor,
         # The diagnostic group labels
         labels: torch.Tensor,   
+        # Predicted age cohorts of the patients. 
+        pred_xcov_groups: torch.Tensor,
+        # The cohort group labels
+        target_xcov_groups: torch.Tensor,
         # Latent space
         batch_latent_sample: torch.Tensor
     ):
         # The classification and reconstruction errors are calculated outside of the loop.
 
         vae_specific_recon_loss = 0
+        vae_specific_xcov_cat_loss = 0
+        vae_specific_xcov_loss = 0
         vae_specific_kldiv_loss = 0
 
         # Calculate diagnosis classification loss and weight it
         target_for_loss = labels.argmax(dim=0).flatten() # flatten to bring from [N,1] to [N,] for cross entropy calculation. 
 
-        if self.ce_class_weights:
+        if self.ce_class_weights is not None:
             class_loss = F.cross_entropy(
                 class_logits.float(), target_for_loss, reduction="mean", weight=self.ce_class_weights,
             )
@@ -763,20 +806,18 @@ class NewVAE_no_XCov(nn.Module):
             class_loss = F.cross_entropy(
                 class_logits.float(), target_for_loss, reduction="mean",
             )
+
         class_loss = class_loss * self.class_loss_weight
 
-        # Calculate the MSE between input and reconstruction and weight it
-        #recon_loss = F.mse_loss(recon_measurements, target_measurements, reduction="mean")
-        #recon_loss = recon_loss * self.recon_loss_weight
+        ortho_loss = self.ortho_loss_weight * self.ortho_loss_fn(mus)
 
-        # ortho_loss = 2 * self.ortho_loss_fn(mus)
-
-        total_loss = class_loss #+ ortho_loss #+ recon_loss
+        total_loss = class_loss + ortho_loss #+ recon_loss
 
         for i in range(len(self.atlas_input_dims.values())): 
             # Get the values specific to one of the sub-VAEs
             mu = mus[i]
             log_var = log_vars[i]
+            pred_xcov_group = pred_xcov_groups[i]
 
             start_idx = self.input_dims[i]
             end_idx = self.input_dims[i+1]
@@ -792,36 +833,39 @@ class NewVAE_no_XCov(nn.Module):
             kldiv_loss = kldiv_loss * self.kldiv_loss_weight
 
             # Calculate the xcov classifiers loss and weight it
+            target_cohorts_for_loss = target_xcov_groups.argmax(dim=1).flatten()
+
+            xcov_cat_loss = F.cross_entropy(
+                pred_xcov_group.float(), target_cohorts_for_loss, reduction="mean"
+            )
+            xcov_cat_loss = xcov_cat_loss * self.xcov_cat_weight
+
+            # Calculate the cross covariance loss and weight it 
+            xcov_loss = self.xcov_loss_fn(latent=mu, 
+                                        observed=pred_xcov_group.float(), 
+                                        batch_size=self.batch_size)
+            xcov_loss = xcov_loss * self.xcov_loss_weight 
+
             vae_specific_recon_loss += recon_loss
+            vae_specific_xcov_cat_loss += xcov_cat_loss
+            vae_specific_xcov_loss += xcov_loss
             vae_specific_kldiv_loss += kldiv_loss
 
-            #vae_specific_loss = (kldiv_loss + xcov_loss + xcov_cat_loss + recon_loss)
-
-        total_loss += vae_specific_kldiv_loss + vae_specific_recon_loss
+        total_loss += vae_specific_kldiv_loss + vae_specific_recon_loss + vae_specific_xcov_cat_loss + vae_specific_xcov_loss
 
         # Return all losses
-        return total_loss, class_loss, vae_specific_recon_loss, vae_specific_kldiv_loss
+        return total_loss, class_loss, vae_specific_recon_loss, vae_specific_kldiv_loss, vae_specific_xcov_loss
 
 
-# This function trains the entire ClassVAE model.
-# It uses many presets and parameters from the Config class.
-# It trains the model for a set number of epochs, and can be stopped early if the learning rate is too low.
-# It also saves the model and performance metrics at checkpoints.
-# The model is trained using the train_loader and validated using the valid_loader.
-# The annotations are used to process the latent space and plot the latent space.
-# The model_metrics are used to store the performance metrics of the model.
-# The config is used to set the training parameters.
-# The accuracy_tune parameter is used to report the accuracy to Ray Tune for hyperparameter tuning.
-# The no_plotting parameter is used to skip plotting, which can be unstable with Ray Tune.
-def train_NewVAE_no_XCov(
-    # the ClassVAE model you want to train
-    model: NewVAE_no_XCov,
+# This function trains the entire VAE2 model, outputting all the specified plots and metrics.
+def train_VAE2(
+    # the VAE2 model you want to train
+    model: VAE2,
     # the training data loader
     train_loader: DataLoader,
     # the validation data loader
     valid_loader: DataLoader,
     # the annotations for the training and validation data
-    # should contain columns for "Data_Type", "Diagnosis", "Dataset", "Age", "Augmented" and "Sex"
     annotations: pd.DataFrame,
     # the model metrics to store the performance metrics of the model
     # If you're loading a model, you can load the model metrics from the previous training run
@@ -836,7 +880,7 @@ def train_NewVAE_no_XCov(
     no_plotting: bool = True,
     # wether to skip plotting of training metrics. Plotting can be unstable with Ray Tune.
     no_val_plotting: bool = False,
-    # wether to save at every checkpoint the respective model
+    # whether to save at every checkpoint the respective model
     no_saving: bool = False
 ):
     # Print / log training start message
@@ -868,7 +912,6 @@ def train_NewVAE_no_XCov(
         valid_metrics = model.validate(valid_loader=valid_loader, epoch=epoch)
 
         if epoch != config.START_EPOCH:
-            #if valid_metrics["accuracy"] > best_accuracy:
             if valid_metrics["valid_loss"] < lowest_loss and epoch >= 25:
                 best_accuracy = valid_metrics["accuracy"]
                 lowest_loss = valid_metrics["valid_loss"]
@@ -881,7 +924,6 @@ def train_NewVAE_no_XCov(
                         epoch='best',
                     )
                 best_model = copy.deepcopy(model)
-
             else:
                 early_stopping_count += 1
 
@@ -889,8 +931,8 @@ def train_NewVAE_no_XCov(
         train_metrics = model.train_one_epoch(
             train_loader=train_loader,
             epoch=epoch,
-        ) 
-
+        )
+        
         # export information about the model
         # update model performance metrics
         model_metrics = update_performance_metrics(
@@ -949,12 +991,14 @@ def train_NewVAE_no_XCov(
                     )
 
                     # break the training loop
-                    break  
+                    break
+
 
     if not no_val_plotting:
         logging.info(log_title("LATENT AND METRIC PLOTTING"))
 
         if not no_plotting:   
+            
             # extract latent space and process it
             valid_latent = best_model.extract_latent_space(valid_loader, "Validation Data")
             train_latent = best_model.extract_latent_space(train_loader, "Training Data")
@@ -1007,6 +1051,7 @@ def train_NewVAE_no_XCov(
                     "Diagnosis",
                     "Diagnosis_pred",
                     "Dataset",
+                    "XCov_pred",
                     "Sex",
                     "Age",
                 ],
@@ -1091,6 +1136,5 @@ def train_NewVAE_no_XCov(
     logging.info(f"Best Overall Validation Accuracy: {max_accuracy} at epoch {best_epoch}")
     logging.info(f"Validation Accuracy of Best Model: {best_accuracy}")
 
-    # once the training loop is done, end logging
-    #end_logging(config)
-    return max_accuracy, best_model
+    end_logging(config)
+    return best_accuracy, best_model

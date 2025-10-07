@@ -8,9 +8,11 @@ import os
 import torch
 from torch.cuda.amp import GradScaler
 import logging
+from typing import Dict, List, Tuple
+from torch.utils.data import DataLoader
 
-from models.aggr_VAE import NewVAE, train_NewVAE
-from models.aggr_VAE_no_XCov import NewVAE_no_XCov, train_NewVAE_no_XCov
+from models.VAE2 import VAE2, train_VAE2
+from models.VAE2_no_XCov import VAE2_no_XCov, train_VAE2_no_XCov
 from utils.data_utils import load_checkpoint_model
 
 from utils.logging_utils import (
@@ -23,14 +25,32 @@ from utils.logging_utils import (
 matplotlib.use("Agg")
 
 
-"""
-This script / function handles the training of the XCov ClassVAE model. It is called during the RUN_ and TUNE_ files.
-It itself calls most importantly models.ClassVAE_2D_XCov, importing the model and training for the specified number of epochs.
-The output of the script is the best model (determined by accuracy) and the corresponding max accuracy.
-"""
+# ====================================================================================================
+#
+# **TRAIN model**
+#
+# This script handles the initialization of a new, untrained model and training it with the specified 
+# parameters. It is called during the RUN_aggr_VAE.py script. The output is the best model (determined
+# by lowest validation loss, after 25 epochs) and the accuarcy at this epoch. To determine which model
+# is selcted as the best, please adjust the train_ function in the /models/ scripts. 
+#
+# ====================================================================================================
 
 
-def train_model(config, train_loader, valid_loader, annotations, atlas_lengths, xcov=True, timing=False):
+def train_model(
+        # Config dictionary with model parameters
+        config: Dict, 
+        # PyTorch dataloader that handles training data
+        train_loader: DataLoader, 
+        # PyTorch dataloader that handles validation data 
+        valid_loader: DataLoader, 
+        # Metadata data frame with all training and validation annotations
+        annotations: pd.DataFrame, 
+        # Dictionary specifying the input lengths of each atlas' data e.g. Neuromorphometrics: 408
+        atlas_lengths: Dict, 
+        # Should the trained model use XCov or not?
+        xcov: bool = True,
+        ):
 
     # Set seed for reproducibility
     torch.manual_seed(config.SEED)
@@ -42,7 +62,7 @@ def train_model(config, train_loader, valid_loader, annotations, atlas_lengths, 
     log_model_setup()
     logging.info(log_title("INITIALIZE MODEL"))
     if xcov:
-        model = NewVAE(
+        model = VAE2(
             num_classes=len(config.DIAGNOSES),
             learning_rate=config.LEARNING_RATE,
             weight_decay=config.WEIGHT_DECAY,
@@ -65,7 +85,7 @@ def train_model(config, train_loader, valid_loader, annotations, atlas_lengths, 
             xcov_covar=config.COVARS[0]
         )
     else: 
-        model = NewVAE_no_XCov(
+        model = VAE2_no_XCov(
             num_classes=len(config.DIAGNOSES),
             learning_rate=config.LEARNING_RATE,
             weight_decay=config.WEIGHT_DECAY,
@@ -114,11 +134,10 @@ def train_model(config, train_loader, valid_loader, annotations, atlas_lengths, 
 
     log_model_ready(model)
 
-    # Train Model --------------------------------------------------
     logging.info(log_title("START TRAINING CYCLE"))
 
     if xcov:
-        max_accuracy, trained_model = train_NewVAE(
+        max_accuracy, trained_model = train_VAE2(
             model=model,
             train_loader=train_loader,
             valid_loader=valid_loader,
@@ -131,7 +150,7 @@ def train_model(config, train_loader, valid_loader, annotations, atlas_lengths, 
         )
 
     else:
-        max_accuracy, trained_model = train_NewVAE_no_XCov(
+        max_accuracy, trained_model = train_VAE2_no_XCov(
             model=model,
             train_loader=train_loader,
             valid_loader=valid_loader,

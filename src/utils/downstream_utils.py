@@ -18,8 +18,8 @@ import copy
 import pickle
 import matplotlib.colors as mcolors
 
-from models.aggr_VAE import NewVAE
-from models.aggr_VAE_no_XCov import NewVAE_no_XCov
+from models.VAE2 import VAE2
+from models.VAE2_no_XCov import VAE2_no_XCov
 from utils.logging_utils import log_title
 from utils.helper_utils import plot_brain_with_saliency
 
@@ -72,8 +72,8 @@ logging.getLogger('shap').setLevel(logging.WARNING) # turns off the "shap INFO" 
 #logging.getLogger('matplotlib').setLevel(logging.WARNING)
 
 # We need to different wrappers for our models, as the XCov and non-XCov models have different outputs during the forawrd pass.
-class NewVAE_Wrapper:
-    def __init__(self, model: NewVAE, device):
+class VAE2_Wrapper:
+    def __init__(self, model: VAE2, device):
         self.model = model.to(device).eval()
 
     def forward(self, image):
@@ -81,8 +81,8 @@ class NewVAE_Wrapper:
         self.model.zero_grad()
         return class_logits
     
-class NewVAE_no_XCov_Wrapper:
-    def __init__(self, model: NewVAE_no_XCov, device):
+class VAE2_no_XCov_Wrapper:
+    def __init__(self, model: VAE2_no_XCov, device):
         self.model = model.to(device).eval()
 
     def forward(self, image):
@@ -273,8 +273,8 @@ def analyze_shap_results(shap_values_tensor, explanations, feature_names=None, t
 ################################################## 2. Trace to ROI ##################################################
 
 # We define two more wrappers that instead of the class logits, output the concatenated latent vector
-class NewVAE_Wrapper_latent:
-    def __init__(self, model: NewVAE, device):
+class VAE2_Wrapper_latent:
+    def __init__(self, model: VAE2, device):
         self.model = model.to(device).eval()
 
     def forward(self, image):
@@ -282,8 +282,8 @@ class NewVAE_Wrapper_latent:
         self.model.zero_grad()
         return latent_vector
 
-class NewVAE_no_XCov_Wrapper_latent:
-    def __init__(self, model: NewVAE, device):
+class VAE2_no_XCov_Wrapper_latent:
+    def __init__(self, model: VAE2_no_XCov, device):
         self.model = model.to(device).eval()
 
     def forward(self, image):

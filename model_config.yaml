@@ -15,6 +15,7 @@ model_parameters:
   classification_loss: 20
   reconstruction_loss: 10
   kldiv_loss: 1
+  orthogonality_loss: 2
   # Keep regardless if an XCov model is trained or not.
   xcov_loss: 5
   xcov_class_loss: 5 

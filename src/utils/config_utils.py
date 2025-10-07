@@ -1,4 +1,3 @@
-# Import general packages
 import os
 import subprocess as sp
 from datetime import datetime, timedelta
@@ -6,10 +5,15 @@ from typing import List
 import torch
 
 
-"""
-Config class to set up all parameters for model preparation and training.
-It is compatible with cross-covariance models and with cross validation procedures by update the directories for every fold.
-"""
+# ====================================================================================================
+#
+# **Configuration Classes**
+#
+# This script contains the configuration classes used to store model and run parameters. It also hand-
+# les the saving of files in their appropriate folders. Testing uses a separate config class to make it
+# easier to juggle the new directories and parameters of the separate testing runs.
+#
+# ====================================================================================================
 
 
 # Get the GPU with the most memory capacity
@@ -36,7 +40,9 @@ def get_free_gpu() -> torch.device:
     return torch.device(gpu)
 
 
-# Set up all parameters for model preparation and training
+# Set up all parameters for model preparation and training. 
+# This is not the same as experiment_config or model_config used in RUN_VAE2, but rather an intermediate class that makes handling far easier
+# and requires less explicit variable calls
 class Config_XCov_CV:
 
     def __init__(
@@ -58,27 +64,16 @@ class Config_XCov_CV:
         LATENT_DIM: int,
         # A string to identify your run (will be in name of the output directory)
         RUN_NAME: str,
-        # The path to the csv files (contains metadata and filenames of MRI .nii files)
-        #TRAIN_CSV: List[str],
-        # The paths to the csv files that contain metadata for the testing data
-        #TEST_CSV: List[str],
-        # The path to the folder where intermediate normalitzed and scaled data should be saved
-        #PROC_DATA_PATH: str,
-        # The path to the directory that contains the MRI .nii files
-        #MRI_DATA_PATH: str,
         # The folder in which a training specific output directory should be created
         OUTPUT_DIR: str,
         # The column names, from the CSVs, that contain the covariates that you want to be attached to the Subject objects
-        # Covariates will be one-hot encoded. Diagnoses is always included. ClassCVAE requires Dataset to be included.
+        # Covariates will be one-hot encoded. Diagnoses is always included.
         COVARS: List[str],
         # The list of diagnoses that you want to include in training. One-hot encoded Diagnosis information will always
         # be appended to the Subjects object.
         DIAGNOSES: List[str],
         # Name of atlas which should be used for training of the model
         ATLAS_NAME: str = None,
-        # Whether to use the Structural Similarity Index (SSIM) as a loss function for reconstruction loss.
-        # Not all models support this.
-        USE_SSIM: bool = False,
         # Whether to use early stopping during training, based on the LR being too low.
         EARLY_STOPPING: bool = True,
         # The learning rate at which to stop training if early stopping is enabled.
@@ -89,17 +84,10 @@ class Config_XCov_CV:
         XCOV_LOSS_WEIGHT: float = None,
         # The weight of the age classifier loss of the model. 
         XCOV_CAT_LOSS_WEIGHT: float = None,
+        # The weight of the orthogonality loss
+        ORTHO_LOSS_WEIGHT: float = None,
         # The weight of of the diagnostic classifier loss. Not all models have classifiers.
         CLASS_LOSS_WEIGHT: float = None,
-        # The weight of the contrastive loss. Only ContrastVAE uses this.
-        CONTR_LOSS_WEIGHT: float = None,
-        # The temperature of the contrastive loss. Temperature is a hyperparameter similar to a loss weight.
-        # Only ContrastVAE uses this.
-        CONTRAST_TEMPERATURE: float = None,
-        # The path to the csv file containing the adversarial training data. Only AdverVAE uses this.
-        #ADVER_CSV: str = None,
-        # The learning rate for the the adversarial training optimizer. Only AdverVAE uses this.
-        #ADVER_LR: float = None,
         # Whether to load a pre-trained model or not. If True, PRETRAIN_MODEL_PATH and PRETRAIN_METRICS_PATH must be set.
         LOAD_MODEL: bool = False,
         # The path to the pre-trained model to load.
@@ -133,8 +121,6 @@ class Config_XCov_CV:
         DEVICE: torch.device = None,
         # A timestamp for the run. If None, the current time will be used. Timestamp will be in output directory name.
         TIMESTAMP: str = None,
-        # Should fine-tuning be used during training?
-        FINE_TUNING: bool = False,
         # What are the weights of classification in cross entropy?
         CE_CLASS_WEIGHTS: List = [1.0, 1.0, 1.0],
         # Are all labels being passed through the pipeline?
@@ -149,15 +135,8 @@ class Config_XCov_CV:
         VOLUMES: str = None,
         # Dimension of the feature vectors
         INPUT_DIM: int = None,
-        # Dimension of the hidden layers. Used for StackVAE
-        HIDDEN_DIM: int = 32,
-        # Number of fully connected layers with batch-norm and dropout. Used for StackVAE
-        NUM_LAYERS: int = 1,
-        PLOTTING_COLORS: dict = {
-        'CTT': '#011936',  
-        'HC': '#22BCBF',   
-        'MDD': '#FF8A5B',
-        'SCHZ': '#EA526F'},
+        # Plotting colors
+        PLOTTING_COLORS: dict = None, 
     ):
         self.RUN_NAME = f"{RUN_NAME}_{ATLAS_NAME}"
         # set up training parameters ------------------------------------------------
@@ -167,24 +146,19 @@ class Config_XCov_CV:
         self.WEIGHT_DECAY = WEIGHT_DECAY
         self.BATCH_SIZE = BATCH_SIZE
         self.LATENT_DIM = LATENT_DIM
-        self.CONTR_LOSS_WEIGHT = CONTR_LOSS_WEIGHT
         self.RECON_LOSS_WEIGHT = RECON_LOSS_WEIGHT
         self.KLDIV_LOSS_WEIGHT = KLDIV_LOSS_WEIGHT
         self.XCOV_LOSS_WEIGHT = XCOV_LOSS_WEIGHT
         self.XCOV_CAT_LOSS_WEIGHT = XCOV_CAT_LOSS_WEIGHT
-        #self.ADVER_LR = ADVER_LR
+        self.ORTHO_LOSS_WEIGHT = ORTHO_LOSS_WEIGHT
         self.CLASS_LOSS_WEIGHT = CLASS_LOSS_WEIGHT
-        self.CONTRAST_TEMPERATURE = CONTRAST_TEMPERATURE
         self.TOTAL_EPOCHS = TOTAL_EPOCHS
         self.COVARS = COVARS
-        self.FINE_TUNING = FINE_TUNING
         self.CE_CLASS_WEIGHTS = CE_CLASS_WEIGHTS
         self.ALL_LABELS = ALL_LABELS
         self.NUM_XCOV_GROUPS = NUM_XCOV_GROUPS
         self.VOLUMES = VOLUMES
         self.INPUT_DIM = INPUT_DIM
-        self.HIDDEN_DIM = HIDDEN_DIM
-        self.NUM_LAYERS = NUM_LAYERS
         self.PLOTTING_COLORS = PLOTTING_COLORS
         self.BATCH_CORRECTION = BATCH_CORRECTION
 
@@ -196,7 +170,6 @@ class Config_XCov_CV:
         self.SEED = SEED
         self.START_EPOCH = 0
         self.DROPOUT_PROB = DROPOUT_PROB
-        self.USE_SSIM = USE_SSIM
         self.SCHEDULE_ON_VALIDATION = SCHEDULE_ON_VALIDATION
         self.SCHEDULER_PATIENCE = SCHEDULER_PATIENCE
         self.SCHEDULER_FACTOR = SCHEDULER_FACTOR
@@ -241,19 +214,9 @@ class Config_XCov_CV:
         self.PRETRAIN_METRICS_PATH = PRETRAIN_METRICS_PATH
         self.FINAL_EPOCH = self.START_EPOCH + self.TOTAL_EPOCHS
 
-        # check that all other paths exist
-        # for path in [ADVER_CSV, MRI_DATA_PATH, OUTPUT_DIR]:
-        #     if path is not None:
-        #         assert os.path.exists(path), f"Path {path} does not exist"
-
         # set up paths
         self.OUTPUT_DIR = OUTPUT_DIR
-        #self.TRAIN_CSV = TRAIN_CSV
-        #self.ADVER_CSV = ADVER_CSV
-        #self.MRI_DATA_PATH = MRI_DATA_PATH
-        #self.PROC_DATA_PATH = PROC_DATA_PATH
         self.ATLAS_NAME = ATLAS_NAME
-        #self.TEST_CSV = TEST_CSV
         self.TRAIN_DATA_PATH = None
 
         # set up path dependent parameters
@@ -265,8 +228,6 @@ class Config_XCov_CV:
         self.OUTPUT_DIR = os.path.join(
             self.OUTPUT_DIR, f"{self.TIMESTAMP}_{self.RUN_NAME}"
         )
-
-        
 
     def update_working_dir(self, tuning: bool = False):
         if not tuning:
@@ -301,6 +262,7 @@ class Config_XCov_CV:
         return str(vars(self))
     
 
+# Setup all parameters and directories for model testing
 class TestingConfig:
     def __init__(
             self,
@@ -327,11 +289,11 @@ class TestingConfig:
             self.TIMESTAMP = current_time.strftime("%Y-%m-%d_%H-%M")
         
         if XCov == True:
-            self.RUN_DIR = f"{self.DATA_DIR}/{self.TIMESTAMP}_NewVAE/{self.MODE}_testing/"
-            self.RUN_NAME = "NewVAE_testing_run"
+            self.RUN_DIR = f"{self.DATA_DIR}/{self.TIMESTAMP}_VAE2/{self.MODE}_testing/"
+            self.RUN_NAME = "VAE2_testing_run"
         else:
-            self.RUN_DIR = f"{self.DATA_DIR}/{self.TIMESTAMP}_ClassVAE_2D_base_testing_run"
-            self.RUN_NAME = "ClassVAE_2D_base_testing_run_logs"
+            self.RUN_DIR = f"{self.DATA_DIR}/{self.TIMESTAMP}_VAE2_no_XCov/{self.MODE}_testing/"
+            self.RUN_NAME = "VAE2_testing_run"
 
         self.LOGGING_DIR = None
 
@@ -343,11 +305,11 @@ class TestingConfig:
         )
         os.makedirs(self.LOGGING_DIR)
 
-    def update_logging_dir_newvae(self):
+    def update_logging_dir_vae2(self):
         self.LOGGING_DIR = f"{self.DATA_DIR}/{self.MODE}_testing/"
         os.makedirs(self.LOGGING_DIR)
 
-    def update_logging_dir_newvae_CV(self, i):
+    def update_logging_dir_vae2_CV(self, i):
         self.LOGGING_DIR = f"{self.DATA_DIR}/{self.MODE}_testing_fold_{i}/"
         os.makedirs(self.LOGGING_DIR)
 

@@ -15,17 +15,23 @@ from utils.data_utils import (process_subjects,
                                       process_latent_space_2D
                                       )
 
-from utils.plotting_utils import latent_space_plot_2D
+from utils.plotting_utils import latent_space_plot_pred
 
-"""
-This is the central code to run predictions on single models. For this a SinglePredictor class is initialized that handles prediction and evaluation with different metrics.
 
-The EnsemblePredictor is a class that aggregates the predictions of several models and learns the optimal linear weighting of each model's predictions. 
-This weighting is applied to the testing dataset. The optimal weights are computed through a Linear Least Squares (LLS) approach. 
-"""
+# ====================================================================================================
+#
+# **PREDICT with a trained model**
+#
+# This script handles the prediction on testing data. The Predictor class loads a trained model
+# and applies it to the testing data that is initialized automatically. The generated latent spaces 
+# are evaluated and model performance metrics are computed. Handles both XCov and non-XCov models. 
+# All outputs are saved to the same folder as the data from training (if model wasn't loaded, in which
+# the experiment folder only contains the here generated testing data).   
+#
+# ====================================================================================================
 
-# ------------------------------------------------------------ Single Atlas Predictor ------------------------------------------------------------
-class SinglePredictor():
+
+class Predictor():
     def __init__(
             self,
             # Device which should be used to run the models.
@@ -176,7 +182,7 @@ class SinglePredictor():
             data_type="train",
         )
 
-        latent_space_plot_2D(
+        latent_space_plot_pred(
             data=latent,
             epoch=999, # Just a placeholder
             plot_types=["umap", "pca"],
@@ -406,8 +412,6 @@ class SinglePredictor():
         elif len(iterator_list) <= 1: 
             raise ValueError(f"Cannot compute AUROC value using only {len(iterator_list)} valid columns!")
         else:
-            #logging.info(labels)
-            #logging.info(probs)
             multiclass_roc_auc = sk.metrics.roc_auc_score(y_true=labels, y_score=probs, average="weighted", multi_class="ovo")
 
         return multiclass_roc_auc

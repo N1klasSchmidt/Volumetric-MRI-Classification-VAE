@@ -12,15 +12,24 @@ import seaborn as sns
 
 from utils.logging_utils import log_and_print
 
-"""
-Plotting functions for all the train_ModelXYZ() functions. 
-"""
+
+# ====================================================================================================
+#
+# **PLOTTING util functions**
+#
+# Here are all the functions to plot training results. Downstream plotting is usually handled directly
+# in the downstream_utils.py functions. The functions here revolve around plotting metrics per training
+# epoch and the latent spaces.  
+#
+# ====================================================================================================
+
 
 # This function plots the metrics of a model over epochs. It can plot each metric in a separate subplot, but it can also
 # combine all the training and validation losses in two subplots, accompanied by an overall train/validation comparison.
 # The function can also plot a rolling average of the metrics, and can skip the first N epochs of plotting (the firs
 # epochs of training can mess with the plot scales). The function can save the plots to a specified path, and can also
 # show the plots in the console.
+# The number of plots is variable and can be extended as desired by adjusting the metric_annotations here and in VAE2.py
 def metrics_plot(
     # The metrics dataframe, containing the metrics of the model over epochs. Index is epochs, columns are names of metrics.
     # The expected column names are detailed in the metric_annotations dictionary.
@@ -149,7 +158,7 @@ def metrics_plot(
             metric_annotations[metric]["color"] for metric in metrics_copy.columns
         ]
 
-        # Each row of the plot will contain 4 subplots
+        # Each row of the plot will contain 4 subplots, length is adjustable! 
         nrows = math.ceil(len(metrics_copy.columns) / 4)
 
         # Plot each metric in a separate subplot using pandas plot
@@ -363,7 +372,8 @@ def latent_space_plot(
         # Show the plot if specified
         plt.show() if show else plt.close()
 
-def latent_space_plot_2D(
+# Slightly adjusted version of the above function to be used during latent plotting of prediction / testing runs
+def latent_space_plot_pred(
     # The AnnData object containing the latent representation of data. Usually the output for model.extract_latent_space().
     data: ad.AnnData,
     # The current epoch of the model, used for the plot title and file name.
@@ -490,7 +500,6 @@ def latent_space_plot_2D(
 
 
 # Outputs a violin plot showing the distribution of confidence scores for correct and incorrect predictions. 
-# It also shows if CTT is more confidently misdiagnosed as HC, MDD or SCHZ. 
 def prediction_confidence_plot(
         true_labels: List,
         prediction_logits: List,
@@ -535,7 +544,7 @@ def prediction_confidence_plot(
     # Combine into a DataFrame for easy plotting with Seaborn
     df = pd.DataFrame({
         'Confidence Score': np.concatenate([correct_confidences, incorrect_confidences, ctt_confidences, ctt_hc_confidences, ctt_mdd_confidences, ctt_schz_confidences]),
-        'Prediction Outcome': ['Correct'] * len(correct_confidences) + ['Incorrect'] * len(incorrect_confidences) + ['CTT'] * len(ctt_confidences) + ['CTT_HC'] * len(ctt_hc_confidences) + ['CTT_MDD'] * len(ctt_mdd_confidences) + ['CTT_SCHZ'] * len(ctt_schz_confidences)
+        'Prediction Outcome': ['Correct'] * len(correct_confidences) + ['Incorrect']
     })
     
     # Create the violin plot
@@ -547,10 +556,6 @@ def prediction_confidence_plot(
                    hue='Prediction Outcome', 
                    palette={'Correct': 'palegreen', 
                             'Incorrect': 'tomato', 
-                            'CTT': "deepskyblue",
-                            'CTT_HC': "skyblue",
-                            'CTT_MDD': "lightskyblue",
-                            'CTT_SCHZ': "lightblue",
                             }, 
                    legend=False)
     plt.title('Distribution of Confidence Scores by Prediction Outcome')
@@ -573,8 +578,6 @@ def prediction_confidence_plot(
     # Show the plot if specified
     plt.show() if show else plt.close()
     return correct_confidences, incorrect_confidences, ctt_confidences
-
-
 
 
 # This function plots the latent space of the model, broken down by diagnosis. Each diagnosis will be plotted in a separate
@@ -866,54 +869,3 @@ def latent_space_details_plot(
         )
 
     plt.show() if show else plt.close()
-
-
-# This plot is rarely used in the code because it was superceded by the metrics plot. It plots accuracy, precision, recall,
-# and f1-score over epochs into one plot. The function can only save the plots to a specified path.
-def confusion_matrix_plot(
-    # The metrics dictionary, containing the metrics of the model over epochs. The keys are the metric names, and the values
-    # are lists of the metric values over epochs. The keys should contain "accuracy", "precision", "recall", and "f1-score".
-    metrics: Dict[str, float],
-    # The path to save the plots to.
-    save_path: str,
-    # The timestamp of the run, used for the file name when saving the plot.
-    timestamp: str,
-):
-    # The keys of the metrics dictionary, and the colors and titles for each metric
-    # Using zip we will iterate over the keys, colors, and titles at the same time
-    metric_keys = ["accuracy", "precision", "recall", "f1-score"]
-    colors = [
-        "blue",
-        "orange",
-        "green",
-        "red",
-    ]
-    titles = [
-        "Accuracy",
-        "Precision",
-        "Recall",
-        "f1-Score",
-    ]
-
-    # Initialize the plot
-    fig, ax = plt.subplots(1, figsize=(12, 6))
-
-    # Plot each metric with the appropriate color and title
-    for i, (key, color, title) in enumerate(zip(metric_keys, colors, titles)):
-        ax.plot(metrics[key], label=title, color=color)
-
-    # Set the plot title and labels
-    ax.set_title("Confusion Metrics Over Epochs")
-    ax.set_xlabel("Epochs")
-    ax.set_ylabel("Metric Value")
-    ax.legend()
-
-    # Set the layout
-    plt.tight_layout()
-
-    # Save the plot
-    plt.savefig(os.path.join(save_path, f"{timestamp}_confusion_stats_.png"))
-    plt.savefig(os.path.join(save_path, f"{timestamp}_confusion_stats_.svg"))
-
-    # Close the plot
-    plt.close(fig)

@@ -1,7 +1,7 @@
 import sys
 sys.path.append("/workspace/src")
 import yaml
-from RUN_aggr_VAE import run_VAE_experiment
+from RUN_VAE2 import run_VAE_experiment
 
 
 # ====================================================================================================

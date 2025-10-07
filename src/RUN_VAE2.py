@@ -1,4 +1,3 @@
-# ------------------------------ STEP 0: Import necessary packages and scripts ------------------------------
 import sys
 import json
 sys.path.append("/workspace/src")
@@ -34,17 +33,17 @@ from utils.logging_utils import setup_logging, log_title
 from utils.logging_utils import setup_prediction_logging, log_prediction_metrics
                                       
 # Import from other scripts the necessary functions to train the models
-from aggr_VAE_training import train_model
-from aggr_VAE_loading import load_data_for_model
-from aggr_VAE_prediction import SinglePredictor
-from models.aggr_VAE import NewVAE
-from models.aggr_VAE_no_XCov import NewVAE_no_XCov
+from VAE2_training import train_model
+from VAE2_loading import load_data_for_model
+from VAE2_prediction import Predictor
+from models.VAE2 import VAE2
+from models.VAE2_no_XCov import VAE2_no_XCov
 
 from utils.downstream_utils import (
-    NewVAE_Wrapper,
-    NewVAE_no_XCov_Wrapper,
-    NewVAE_Wrapper_latent,
-    NewVAE_no_XCov_Wrapper_latent,
+    VAE2_Wrapper,
+    VAE2_no_XCov_Wrapper,
+    VAE2_Wrapper_latent,
+    VAE2_no_XCov_Wrapper_latent,
     run_shap_analysis,
     get_all_correlations,
     predict_unseen_risk_from_latent,
@@ -57,15 +56,24 @@ from utils.downstream_utils import (
 )
 
 # ====================================================================================================
+#
 # **RUN Aggregated VAE model with Expeiment Config Parameters**
 #
 # This is the central script for running different experiments. It takes the experiment and model 
-# configs and handles them accordingly. A 
+# configs and handles them accordingly. All output data is saved to a single experiment under the 
+# 'experiments' folder. The split data is saved to the data folder.
+#
 # ====================================================================================================
 
 
-def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
+def run_VAE_experiment(
+        # Config dictionary with experimental parameters
+        experiment_config: Dict, 
+        # Config dictionary with model parameters
+        model_config: Dict
+        ):
     
+    # ------------------------------ STEP 1: Prepare the parameters of the run ------------------------------
     atlas_map = get_atlas_map(experiment_config["data"]["input_atlases"])
     metadata = pd.read_csv(experiment_config["data"]["metadata_path"], header=[0])
     
@@ -105,7 +113,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
     for diag, color in zip(experiment_config["data"]["diagnoses"], experiment_config["data"]["diagnosis_colors"]):
         diagnosis_colors_plotting[diag] = color 
 
-    # ------------------------------ STEP 3: Prepare the config file and parameters of the run ------------------------------
+    # ------------------------------ STEP 3: Prepare the config of the run ------------------------------
     config = Config_XCov_CV(
             # General Parameters
             RUN_NAME=run_name,
@@ -123,6 +131,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
             CLASS_LOSS_WEIGHT=model_config["model_parameters"]["classification_loss"],
             XCOV_LOSS_WEIGHT=model_config["model_parameters"]["xcov_loss"],
             XCOV_CAT_LOSS_WEIGHT=model_config["model_parameters"]["xcov_class_loss"],
+            ORTHO_LOSS_WEIGHT=model_config["model_parameters"]["orthogonality_loss"],
             # Learning and Regularization
             TOTAL_EPOCHS=model_config["model_parameters"]["epochs"],
             LEARNING_RATE=model_config["model_parameters"]["learning_rate"],
@@ -165,6 +174,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
 
     setup_logging(config)
 
+    # ------------------------------ STEP 3: Split, batch correct and resample data ------------------------------
     logging.info(log_title("TRAIN-TEST SPLITTING" ))
     metadata_dict = determine_split(experiment_config["data"]["train_test_split"], metadata)
     resplit_data(df_dict=metadata_dict, output_dir=config.OUTPUT_DIR, data_type=experiment_config["data"]["data_format"])
@@ -251,7 +261,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
     num_xcov_groups = len(xcov_groups_train)
     config.NUM_XCOV_GROUPS = num_xcov_groups
 
-    # ------------------------------ STEP 5: Load data and train model ------------------------------
+    # ------------------------------ STEP 4: Load data and train model ------------------------------
 
     train_dataloader, valid_dataloader, atlas_lengths, annotations = load_data_for_model(config=config, 
                                                                                         train_df=train_df_sampled,
@@ -273,7 +283,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
         logging.info(log_title("LOAD MODEL"))
 
         if experiment_config["model"]["xcov"]:
-            model_architecture = NewVAE(
+            model_architecture = VAE2(
                 num_classes=len(config.DIAGNOSES),
                 learning_rate=config.LEARNING_RATE,
                 weight_decay=config.WEIGHT_DECAY,
@@ -295,7 +305,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
                 dropout_prob=config.DROPOUT_PROB,
             )
         else: 
-            model_architecture = NewVAE_no_XCov(
+            model_architecture = VAE2_no_XCov(
                 num_classes=len(config.DIAGNOSES),
                 learning_rate=config.LEARNING_RATE,
                 weight_decay=config.WEIGHT_DECAY,
@@ -319,7 +329,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
 
         trained_model = load_checkpoint_model(model=model_architecture, model_filename=trained_model_path)
 
-    # ------------------------------ STEP 6: Perform the testing with the trained model ------------------------------
+    # ------------------------------ STEP 5: Perform the testing with the trained model ------------------------------
     test_dirs = [item for item in metadata_dict.keys() if item.startswith("test")]
     assert sorted(experiment_config["analysis"].keys()) == sorted(test_dirs), "Ensure that the testing runs under 'experiment' correspond with the setup data split"
 
@@ -344,7 +354,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
             mode=str(testing_run),
         )
 
-        testing_config.update_logging_dir_newvae()
+        testing_config.update_logging_dir_vae2()
 
         setup_prediction_logging(config=testing_config)
 
@@ -355,15 +365,16 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
             label_mapping[idx] = diagnosis
 
         # if experiment_config["model"]["xcov"]:
-        predictor = SinglePredictor(logging_config=testing_config, 
-                                    model_config=model_config,
-                                    model=trained_model, 
-                                    run_id=testing_run, 
-                                    device=config.DEVICE,
-                                    label_mapping=label_mapping,
-                                    original_diagnoses=config.DIAGNOSES,
-                                    extended_data_path=experiment_config["analysis"][testing_run]["extra_metadata_path"], 
-                                    xcov=experiment_config["model"]["xcov"])
+        predictor = Predictor(logging_config=testing_config, 
+                              model_config=model_config,
+                              model=trained_model, 
+                              run_id=testing_run, 
+                              device=config.DEVICE,
+                              label_mapping=label_mapping,
+                              original_diagnoses=config.DIAGNOSES,
+                              extended_data_path=experiment_config["analysis"][testing_run]["extra_metadata_path"], 
+                              xcov=experiment_config["model"]["xcov"]
+                              )
 
         all_data_paths_filtered = {}
         for atlas in sorted(atlas_map.keys()):
@@ -440,7 +451,7 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
                 save_path = os.path.join(testing_config.LOGGING_DIR, "LATENT")
                 os.makedirs(save_path)
 
-                # We predict two things from the latent vectors: 1. A "CTT-Risk" and 2. Clinical variables like Age or nss_motor
+                # We predict two things from the latent vectors: 1. A "Unseen-Risk" and 2. Clinical variables like Age or nss_motor
                 # Besides simply knowing which latent features are involved in this prediction we can also determine which ROIs these features correspond with.
                 # For this there are again two approaches:
                 # 1. Use (Gradient)SHAP to compute which ROIs correspond with which latent feature. This is also just handy as an overview.
@@ -484,9 +495,9 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
                 latent_dim = len(latent_data.columns.to_list())
 
                 if experiment_config["model"]["xcov"]:
-                    wrapped_model_for_latent = NewVAE_Wrapper_latent(trained_model, config.DEVICE)
+                    wrapped_model_for_latent = VAE2_Wrapper_latent(trained_model, config.DEVICE)
                 else:
-                    wrapped_model_for_latent = NewVAE_no_XCov_Wrapper_latent(trained_model, config.DEVICE)
+                    wrapped_model_for_latent = VAE2_no_XCov_Wrapper_latent(trained_model, config.DEVICE)
 
                 mapping_roi_to_latent = trace_latent_to_roi(config.DEVICE, wrapped_model_for_latent, valid_dataloader, rois, 3, latent_dim)
                 mapping_roi_to_latent.to_csv(f"{save_path}/map_latent_to_roi.csv")
@@ -509,9 +520,9 @@ def run_VAE_experiment(experiment_config: Dict, model_config: Dict):
                 os.makedirs(save_path)
 
                 if experiment_config["model"]["xcov"]: 
-                    wrapped_model = NewVAE_Wrapper(trained_model, config.DEVICE)
+                    wrapped_model = VAE2_Wrapper(trained_model, config.DEVICE)
                 else: 
-                    wrapped_model = NewVAE_no_XCov_Wrapper(trained_model, config.DEVICE)
+                    wrapped_model = VAE2_no_XCov_Wrapper(trained_model, config.DEVICE)
 
                 model_outputs = sorted(train_annotations_split["Diagnosis"].unique().tolist())
 
