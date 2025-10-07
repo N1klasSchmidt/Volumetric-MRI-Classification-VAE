@@ -70,23 +70,10 @@ data:
 
     # Split into data for training / validation and testing by taking proportions of entire data
     train_valid_proportion: 0.8
-  
-
-# ===================================================================
-# 3. MODEL SPECIFICATION
-# Define the model architecture and its hyperparameters.
-# ===================================================================
-
-model:
-  # Whould the model with (True) or without (False) be used? 
-  xcov: true # Options: True, False
-  # --- Specific to Xcov model type ---
-  # If the model type is 'Xcov', this specifies the covariate to use (must exist in metadata!)
-  covariate_names: ["Dataset"]
 
 
 # ===================================================================
-# 4. EVALUATION
+# 3. EVALUATION
 # Define which steps of the testing and downstream analysis are performed.
 # ===================================================================
 

@@ -82,7 +82,7 @@ def run_VAE_experiment(
     
     metadata = metadata[["Filename", "Sex", "Sex_int", "Dataset", "Diagnosis", "Age"]]
 
-    for covar in experiment_config["model"]["covariate_names"]:
+    for covar in model_config["covariate_names"]:
         assert covar in metadata.columns.to_list(), f"Covariate '{covar}' not found. Please use covariates for which there is a column in the provided metadata!"
 
     if experiment_config["experiment"]["run_name"] is None:
@@ -151,7 +151,7 @@ def run_VAE_experiment(
             # Data Parameters
             BATCH_SIZE=model_config["model_parameters"]["batch_size"],
             DIAGNOSES=experiment_config["data"]["diagnoses"], #This is just a placeholder. It is overwritten for training and testing.
-            COVARS=experiment_config["model"]["covariate_names"],
+            COVARS=model_config["covariate_names"],
             # Misc.
             LATENT_DIM=10, ##################################################### PLACEHOLDER, REMOVE
             SHUFFLE_DATA=False,
@@ -278,11 +278,11 @@ def run_VAE_experiment(
                                                 valid_loader=valid_dataloader,
                                                 annotations=annotations,
                                                 atlas_lengths=atlas_lengths,
-                                                xcov=experiment_config["model"]["xcov"])
+                                                xcov=model_config["xcov"])
     else: 
         logging.info(log_title("LOAD MODEL"))
 
-        if experiment_config["model"]["xcov"]:
+        if model_config["xcov"]:
             model_architecture = VAE2(
                 num_classes=len(config.DIAGNOSES),
                 learning_rate=config.LEARNING_RATE,
@@ -350,7 +350,7 @@ def run_VAE_experiment(
             SEED=123,
             TIMESTAMP=None,
             DATA_DIR=model_config.OUTPUT_DIR, # We save the testing data in the same place as training!
-            XCov=experiment_config["model"]["xcov"],
+            XCov=model_config["xcov"],
             mode=str(testing_run),
         )
 
@@ -364,7 +364,7 @@ def run_VAE_experiment(
         for idx, diagnosis in enumerate(sorted(model_config.DIAGNOSES)): 
             label_mapping[idx] = diagnosis
 
-        # if experiment_config["model"]["xcov"]:
+        # if model_config["xcov"]:
         predictor = Predictor(logging_config=testing_config, 
                               model_config=model_config,
                               model=trained_model, 
@@ -373,7 +373,7 @@ def run_VAE_experiment(
                               label_mapping=label_mapping,
                               original_diagnoses=config.DIAGNOSES,
                               extended_data_path=experiment_config["analysis"][testing_run]["extra_metadata_path"], 
-                              xcov=experiment_config["model"]["xcov"]
+                              xcov=model_config["xcov"]
                               )
 
         all_data_paths_filtered = {}
@@ -494,7 +494,7 @@ def run_VAE_experiment(
 
                 latent_dim = len(latent_data.columns.to_list())
 
-                if experiment_config["model"]["xcov"]:
+                if model_config["xcov"]:
                     wrapped_model_for_latent = VAE2_Wrapper_latent(trained_model, config.DEVICE)
                 else:
                     wrapped_model_for_latent = VAE2_no_XCov_Wrapper_latent(trained_model, config.DEVICE)
@@ -519,7 +519,7 @@ def run_VAE_experiment(
                 save_path = os.path.join(testing_config.LOGGING_DIR, "SHAP")
                 os.makedirs(save_path)
 
-                if experiment_config["model"]["xcov"]: 
+                if model_config["xcov"]: 
                     wrapped_model = VAE2_Wrapper(trained_model, config.DEVICE)
                 else: 
                     wrapped_model = VAE2_no_XCov_Wrapper(trained_model, config.DEVICE)
