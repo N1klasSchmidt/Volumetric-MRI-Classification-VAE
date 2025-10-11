@@ -3,15 +3,16 @@
 # Define the crucial parameters for the model!
 # ===================================================================
 
+# Should the model with (True) or without (False) be used? 
+xcov: true # Options: true, false
+# If the model type is 'Xcov', this specifies the covariate to use (must exist in metadata!)
+covariate_names: ["Dataset"]
+
 model_parameters: 
-  # Should the model with (True) or without (False) be used? 
-  xcov: true # Options: true, false
-  # If the model type is 'Xcov', this specifies the covariate to use (must exist in metadata!)
-  covariate_names: ["Dataset"]
   # General parameters
   learning_rate: 0.002
   weight_decay: 0.0006699
-  epochs: 10
+  epochs: 50
   batch_size: 128 
   dropout_probability: 0.2
   hidden_dimension_size: 100

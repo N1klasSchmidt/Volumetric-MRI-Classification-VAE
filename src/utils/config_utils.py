@@ -69,8 +69,10 @@ class Config_XCov_CV:
         # The column names, from the CSVs, that contain the covariates that you want to be attached to the Subject objects
         # Covariates will be one-hot encoded. Diagnoses is always included.
         COVARS: List[str],
+        # Hidden dimension of the model
+        HIDDEN_DIM: int, 
         # The list of diagnoses that you want to include in training. One-hot encoded Diagnosis information will always
-        # be appended to the Subjects object.
+        # be appended to the Subjects object.        
         DIAGNOSES: List[str],
         # Name of atlas which should be used for training of the model
         ATLAS_NAME: str = None,
@@ -161,6 +163,7 @@ class Config_XCov_CV:
         self.INPUT_DIM = INPUT_DIM
         self.PLOTTING_COLORS = PLOTTING_COLORS
         self.BATCH_CORRECTION = BATCH_CORRECTION
+        self.HIDDEN_DIM = HIDDEN_DIM
 
         # set up optional training parameters
         self.CHECKPOINT_INTERVAL = CHECKPOINT_INTERVAL

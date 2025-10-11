@@ -155,7 +155,6 @@ def run_VAE_experiment(
             # Misc.
             LATENT_DIM=10, ##################################################### PLACEHOLDER, REMOVE
             SHUFFLE_DATA=False,
-            FINE_TUNING=False,
             CE_CLASS_WEIGHTS=None,
             ALL_LABELS=False,
             PURPOSE="train",
@@ -222,8 +221,8 @@ def run_VAE_experiment(
     elif experiment_config["data"]["resampling"] == "hybrid":
         logging.info(f"Performing hybrid sampling of data with method: {resample_method}")
 
-        assert len(experiment_config["data"]["hybrid_ranking"]) == 3, f"Hybrid sampling only available for three diagnoses. {len(experiment_config["data"]["hybrid_ranking"])} is an invalid number of diagnoses!"
-        assert len(train_annotations_split["Diagnosis"].unique()) == 3, f"Training annotations don't contain exactly 3 unique diagnoses. Instead {len(train_annotations_split["Diagnosis"].unique())}."
+        assert len(experiment_config["data"]["hybrid_ranking"]) == 3, f"Hybrid sampling only available for three diagnoses. {len(experiment_config['data']['hybrid_ranking'])} is an invalid number of diagnoses!"
+        assert len(train_annotations_split["Diagnosis"].unique()) == 3, f"Training annotations don't contain exactly 3 unique diagnoses. Instead {len(train_annotations_split['Diagnosis'].unique())}."
 
         diag_ranks = experiment_config["data"]["hybrid_ranking"]
 
@@ -242,6 +241,7 @@ def run_VAE_experiment(
                                     training_files=train_annotations_split,
                                     save_dir="/workspace/data/raw_data_train_valid",
                                     atlas_map=atlas_map)
+        train_df_sampled = train_annotations_split
         resampling_ext = f"{bat_corr_ext}nors.csv"
         train_valid_df_sampled = pd.concat([train_annotations_split, valid_annotations_split])
 
@@ -294,6 +294,7 @@ def run_VAE_experiment(
                 class_loss_weight=config.CLASS_LOSS_WEIGHT,
                 xcov_weight=config.XCOV_LOSS_WEIGHT,
                 xcov_cat_weight=config.XCOV_CAT_LOSS_WEIGHT,
+                ortho_weight=config.ORTHO_LOSS_WEIGHT,
                 latent_dim=config.LATENT_DIM,
                 atlas_input_dims=atlas_lengths,
                 schedule_on_validation=config.SCHEDULE_ON_VALIDATION,
@@ -316,6 +317,7 @@ def run_VAE_experiment(
                 class_loss_weight=config.CLASS_LOSS_WEIGHT,
                 xcov_weight=config.XCOV_LOSS_WEIGHT,
                 xcov_cat_weight=config.XCOV_CAT_LOSS_WEIGHT,
+                ortho_weight=config.ORTHO_LOSS_WEIGHT,
                 latent_dim=config.LATENT_DIM,
                 atlas_input_dims=atlas_lengths,
                 schedule_on_validation=config.SCHEDULE_ON_VALIDATION,
@@ -340,16 +342,16 @@ def run_VAE_experiment(
         testing_run_diagnoses = testing_data["Diagnosis"].unique().tolist()
         testing_run_experimental_details = experiment_config["analysis"][testing_run]
 
-        model_config = copy.deepcopy(config)
+        trained_model_config = copy.deepcopy(config)
         
-        model_config.DIAGNOSES = testing_run_diagnoses
-        model_config.PURPOSE = testing_run
+        trained_model_config.DIAGNOSES = testing_run_diagnoses
+        trained_model_config.PURPOSE = testing_run
 
         testing_config = TestingConfig(
             UMAP_NEIGHBORS=100, 
             SEED=123,
             TIMESTAMP=None,
-            DATA_DIR=model_config.OUTPUT_DIR, # We save the testing data in the same place as training!
+            DATA_DIR=trained_model_config.OUTPUT_DIR, # We save the testing data in the same place as training!
             XCov=model_config["xcov"],
             mode=str(testing_run),
         )
@@ -361,12 +363,12 @@ def run_VAE_experiment(
         logging.info(log_title(f"TESTING RUN {testing_run}"))
 
         label_mapping = {}
-        for idx, diagnosis in enumerate(sorted(model_config.DIAGNOSES)): 
+        for idx, diagnosis in enumerate(sorted(trained_model_config.DIAGNOSES)): 
             label_mapping[idx] = diagnosis
 
         # if model_config["xcov"]:
         predictor = Predictor(logging_config=testing_config, 
-                              model_config=model_config,
+                              model_config=trained_model_config,
                               model=trained_model, 
                               run_id=testing_run, 
                               device=config.DEVICE,

@@ -1065,14 +1065,14 @@ def no_resample(
         validation_data = pd.merge(joined_validation_df_t, validation_files, on="Filename", how="left")
         validation_data = validation_data.drop(columns=["Age", "Sex", "Sex_int"]).set_index("Filename")
 
-    training_data = pd.merge(joined_training_df_t, training_files, on="Filename", how="left") # Transpose as we need the columns to contain the features (ROIs)
+    training_data = pd.merge(joined_training_df_t, training_files, on="Filename", how="left").set_index("Filename", drop=True) # Transpose as we need the columns to contain the features (ROIs)
 
     training_data = training_data.drop(columns=["Age", "Sex", "Sex_int"])
 
     logging.info("Step: Returning data to original per-atlas format")
     
     if validation_data is not None:
-        total_df = pd.concat([training_data, validation_data]).drop(columns=["Dataset", "Diagnosis", "Sample_status"]).T
+        total_df = pd.concat([training_data, validation_data]).drop(columns=["Dataset", "Diagnosis"]).T
     else: 
         total_df = training_data.drop(columns=["Dataset", "Diagnosis", "Sample_status"]).T
 

@@ -9,7 +9,7 @@ experiment:
   # If left empty a name is automatically generated.
   run_name: null
   # Set to True to train a new model; False to load a pre-trained one.
-  train_model: false
+  train_model: true
   # If train_model is False, specify the experiment path to load weights from.
   base_experiment_to_load: "/workspace/experiments/2025-09-26_11-05_NewVAE_multi_XCov_hybrid_random_xcov"
   # Base directory where all results (logs, models, metrics) will be saved
@@ -44,8 +44,8 @@ data:
   batch_correction: null
 
   # --- Resampling of data  --- 
-  # What resampling method should be used on the data? Choice between "hybrid", "over", "under" and None
-  resampling: "hybrid"
+  # What resampling method should be used on the data? Choice between "hybrid", "over", "under" and null
+  resampling: null
   # If resampling is either "over" or "under" please specify the specific method
   # Undersampling provides: "allknn", "nm2", "random" and "tomek"
   # Oversampling provides: "ADASYN", "SMOTE", "SMOTENC" and "random"
@@ -80,7 +80,7 @@ data:
 analysis: 
   # Which testing should be performed
   test_1: 
-    # Should downstream analysis be performed
+    # Should downstream analysis be performed. This requires an extra_metadata file!
     downstream: false
     # Is there additional metadata associated with this testing data? 
     # Regardless of train_test_split, pass this as a single df with rosw=samples, columns=vars
