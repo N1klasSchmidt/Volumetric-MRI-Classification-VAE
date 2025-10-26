@@ -27,6 +27,7 @@ from sklearn.linear_model import LogisticRegression, ridge_regression, Lasso
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split, KFold
 from sklearn.metrics import r2_score, confusion_matrix
+from scipy.stats import ttest_rel
 
 from captum.attr import GradientShap
 
@@ -942,6 +943,188 @@ def predict_clinical_from_latent(
 
     results_df = pd.DataFrame.from_dict(results)
     return results_df, resuls_selected_features, results_coeff
+
+# Updated version of predict_clinical_from_latent with permutation testing and 10-fold CV instead of a LOOCV and fixed alpha for LASSO.
+def predict_clinical_from_latent_updt(
+    clinical: pd.DataFrame, 
+    latent: pd.DataFrame,
+    save_path: str,
+    k: int = 10, # Changed from 4 to 10 for 10-fold CV
+    method: str = "lasso",
+    n_permutations: int = 1000,
+    random_state: int = 42
+) -> pd.DataFrame:
+    """Predicts clinical variables from latent feature vectors using cross-validated regression 
+       and evaluates significance via permutation testing."""
+    
+    logging.info(f"Predicting clinical variables from latent feature vectors (CV {method.upper()} Regression)")
+    np.random.seed(random_state)
+    
+    results = {}
+    results_selected_features = {}
+    results_coeff = {}
+    
+    # sorted_clinical = clinical.sort_index().drop(
+    #     columns=['Dataset', 'Diagnosis', 'Sex', 'catatonia_icd11_v1', "bis11_attentional", 
+    #             "bis11_motor", "bis11_nonplanning", "bis11_total"], errors='ignore'
+    # )
+    sorted_clinical = clinical.sort_index().drop(
+        columns=['Dataset', 'Diagnosis', 'Sex', 'catatonia_icd11_v1',], errors='ignore'
+    )
+    sorted_clinical_num = sorted_clinical.select_dtypes(include=np.number)
+    sorted_latent = latent.sort_index()
+
+    X_full = sorted_latent.values
+    
+    for idx, target in enumerate(sorted_clinical_num.columns.to_list()):
+        logging.info(f"Step: [{idx+1}/{len(sorted_clinical_num.columns.to_list())}] Regression on {target}")
+        y_full = sorted_clinical_num[target].values
+
+        selected_features = []
+
+        # Remove NaNs for this target
+        valid_indices = ~np.isnan(y_full)
+        X = X_full[valid_indices]
+        y = y_full[valid_indices]
+
+        if len(y) < k:
+             logging.warning(f"Skipping {target}: Insufficient samples ({len(y)}) for {k}-fold CV.")
+             continue
+
+        kf = KFold(n_splits=k, shuffle=True, random_state=random_state)
+        y_preds = []
+        y_tests = []
+        fold_metrics = {'r2': [], 'rmse': [], 'baseline_rmse': []}
+
+        # --- Model Fitting and CV Evaluation (Observed Performance) ---
+        for i, (train_indices, test_indices) in enumerate(kf.split(X)):
+            X_train, X_test = X[train_indices], X[test_indices]
+            y_train, y_test = y[train_indices], y[test_indices]
+            
+            if method == "ridge":
+                model = Ridge(alpha=1.0, random_state=random_state)
+            elif method == "lasso":
+                # Use a small fixed alpha for simplicity (original code used 0.1)
+                model = Lasso(alpha=0.1, random_state=random_state, max_iter=1000) 
+                selected_features.append(model.coef_)
+            else:
+                raise ValueError("Method must be 'lasso' or 'ridge'")
+
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+
+            y_preds.extend(y_pred)
+            y_tests.extend(y_test)
+
+            fold_rmse = np.sqrt(np.mean((y_pred - y_test)**2))
+            baseline_pred = np.full_like(y_test, y_train.mean())
+            baseline_rmse = np.sqrt(np.mean((baseline_pred - y_test)**2))
+            
+            fold_metrics['rmse'].append(fold_rmse)
+            fold_metrics['baseline_rmse'].append(baseline_rmse)
+
+        y_preds_np = np.array(y_preds)
+        y_tests_np = np.array(y_tests)
+
+        # Observed overall metrics
+        r2_obs = r2_score(y_tests_np, y_preds_np)
+        rmse_obs = np.sqrt(np.mean((y_preds_np - y_tests_np)**2))
+        
+        n = len(y_tests_np)
+        _k_features = X.shape[1]
+        
+        # F-statistic and P-value for the full model R^2
+        if r2_obs >= 0 and n > _k_features + 1:
+            f_stat = (r2_obs / (1 - r2_obs)) * ((n - _k_features - 1) / _k_features)
+            dfN = _k_features
+            dfD = n - _k_features - 1
+            pVal = f.sf(f_stat, dfN, dfD)
+            cohen_f2 = r2_obs / (1 - r2_obs)
+        else:
+            f_stat, pVal, cohen_f2 = np.nan, np.nan, np.nan
+
+        # --- Permutation Testing ---
+        # Null hypothesis: The relationship between X and y is random.
+        # Permute y (target variable) and re-run CV
+        
+        permuted_r2_scores = []
+        for _ in range(n_permutations):
+            y_permuted = np.random.permutation(y)
+            y_permuted_preds = []
+            y_permuted_tests = []
+            
+            for train_indices, test_indices in kf.split(X):
+                X_train, X_test = X[train_indices], X[test_indices]
+                y_train_perm, y_test_perm = y_permuted[train_indices], y_permuted[test_indices]
+                
+                # Use the same model setup (Lasso/Ridge)
+                if method == "ridge":
+                    model_perm = Ridge(alpha=1.0, random_state=random_state)
+                else:
+                    model_perm = Lasso(alpha=0.1, random_state=random_state, max_iter=1000)
+                
+                model_perm.fit(X_train, y_train_perm)
+                y_pred_perm = model_perm.predict(X_test)
+                
+                y_permuted_preds.extend(y_pred_perm)
+                y_permuted_tests.extend(y_test_perm)
+
+            r2_perm = r2_score(np.array(y_permuted_tests), np.array(y_permuted_preds))
+            permuted_r2_scores.append(r2_perm)
+
+        permuted_r2_scores = np.array(permuted_r2_scores)
+        
+        # Permutation p-value: (Count of times permuted R^2 >= observed R^2) / n_permutations
+        p_val_perm = (np.sum(permuted_r2_scores >= r2_obs) + 1) / (n_permutations + 1) # Add 1 for robustness
+
+        # Paired t-test (model RMSE vs. baseline RMSE)
+        t_stat_cv, p_val_cv = ttest_rel(fold_metrics['rmse'], fold_metrics['baseline_rmse'])
+
+        results[target] = {
+            "f_stat": f_stat, 
+            "p_val_model_sig": pVal,
+            "r2_obs": r2_obs,
+            "rmse_obs": rmse_obs,
+            "mean_perm_r2": np.mean(permuted_r2_scores),
+            "p_val_perm": p_val_perm,
+            "p_val_cv_baseline": p_val_cv,
+            "mean_rmse_model": np.mean(fold_metrics['rmse']),
+            "mean_rmse_baseline": np.mean(fold_metrics['baseline_rmse']),
+            "cohen_f2": cohen_f2,
+        }
+
+        # Detailed fold results for optional saving/inspection
+        results_detailed = {
+            'fold_rmse_scores': fold_metrics['rmse'],
+            'fold_baseline_rmse': fold_metrics['baseline_rmse'],
+            'permuted_r2_scores': permuted_r2_scores.tolist()
+        }
+
+        if pVal <= 0.05:
+            logging.info(f"P-value for {target}: {p_val_perm}")
+
+            selection_df = pd.DataFrame(selected_features).T.abs()  # We make a df of the coefficients and transpose to have (n_coeff, n_folds)
+            rows_with_a_zero = (selection_df ==0).any(axis=1)
+            df_intersect = selection_df.loc[~rows_with_a_zero]  # Remove any rows that contain a zero = not all folds share this feature! 
+            df_intersect["avg"] = df_intersect.mean(axis=1)
+            df_intersect.sort_values(by="avg", ascending=False, inplace=True)
+            intersecting_features = df_intersect.index.to_list()  # Intersecting features sorted by average value of coefficients
+
+            results_selected_features[target] = intersecting_features
+            logging.info(f"Intersectiong latent features across all folds: {intersecting_features}")
+
+            grad_y_wrt_z = model.coef_
+            train_samples = sorted_clinical_num.iloc[train_indices].index.to_list()
+            
+            results_coeff[target] = {"grads": grad_y_wrt_z,
+                                     "train_samples": train_samples}
+
+        
+        with open(f"{save_path}/clinical_from_latent_{target}.pkl", "wb") as file:
+            pickle.dump(results_detailed, file)
+            
+    results_df = pd.DataFrame.from_dict(results, orient='index')
+    return results_df, results_selected_features, results_coeff
 
 
 def additional_significance_tests(

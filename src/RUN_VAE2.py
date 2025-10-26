@@ -47,7 +47,7 @@ from utils.downstream_utils import (
     run_shap_analysis,
     get_all_correlations,
     predict_unseen_risk_from_latent,
-    predict_clinical_from_latent,
+    predict_clinical_from_latent_updt,
     trace_latent_to_roi,
     saliency_from_latent,
     get_latent_feature_correlation_plot,
@@ -481,7 +481,7 @@ def run_VAE_experiment(
                         logging.info(f"Unable to plot saliency results, as 'neuromorphometrics' not included as atlas input.")
 
                 ########## Clinical Variable Prediction ##########
-                clinical_results, clinical_latent_importance, clinical_coeff = predict_clinical_from_latent(clinical=extended_metadata,
+                clinical_results, clinical_latent_importance, clinical_coeff = predict_clinical_from_latent_updt(clinical=extended_metadata,
                                                                         latent=latent_data,
                                                                         save_path=save_path)
                 
