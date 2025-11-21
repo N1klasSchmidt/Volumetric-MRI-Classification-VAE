@@ -20,7 +20,7 @@ To run the deep learning models, a GPU with CUDA 11.6 is required for optimal pe
 * `torch==1.13.1`
 * `scanpy==1.10.2`
 
-A comprehensive list of all required packages can be found in the `requirements.txt` file.
+A comprehensive list of all required packages can be found in the `requirements_clean.txt` file. Use this to build your environement.
 
 ## Running your own experiments 
 
@@ -50,5 +50,5 @@ The analysis pipelines generate a variety of outputs to comprehensively evaluate
 * **AUROC Values**: Single-class and multi-class Area Under the Receiver Operating Characteristic (AUROC) values, providing a robust measure of classification performance across different thresholds.
 * **ROC Curves**: Visualizations of the Receiver Operating Characteristic (ROC) curves for each class label, illustrating the trade-off between true positive rate and false positive rate.
 * **Correlation Heatmaps**: Heatmaps depicting the correlations between clinical variables and model predictions, aiding in the interpretability of the models' findings in a clinical context.
-* **Feature Importance Analysis**: Saliency maps and SHAP (SHapley Additive exPlanations) values are computed to identify and quantify the importance of different input features (ROI volumes) in the model's decision-making process.
+* **Feature Importance Analysis**: Saliency maps and SHAP (SHapley Additive exPlanations) values are computed to identify and quantify the importance of different input features (ROI volumes) in the model's decision-making process. An interactive plot is also generated. An example can be found under /examples/saliency_CAT_logreg_interactive.html
 
