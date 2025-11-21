@@ -209,3 +209,6 @@ __marimo__/
 
 data
 experiments
+.vscode-server
+.bash_history
+data_clean
